@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>🏦 Best Bank 🏦</title>
+    <style>
+      html {
+          font-family: "Verdana", san-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>🏦 Best Bank 🏦</h1>
+    <h2>Please Login</h2>
+    {{#if flash}}
+    <p style="color:black; background-color: tomato;">{{ flash }}</p>
+    {{/if}}
+
+    <form action="/login" method="post" accept-charset="utf-8">
+      <label for="username">username</label>
+      <input type="text" name="username" id="username" value="" />
+      <label for="password">password</label>
+      <input type="password" name="password" id="password" value="" />
+      <p><input type="submit" value="login"></p>
+    </form>
+  </body>
+</html>

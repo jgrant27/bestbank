@@ -1,0 +1,112 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+
+<html>
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>🏦 Best Bank 🏦</title>
+    <style>
+      html {
+          font-family: "Verdana", san-serif;
+      }
+    </style>
+    <script>
+    <!--
+      function account_info() {
+          fetch('/json/account_info')
+              .then(function(response) {
+                  response.json().then(function(data) {
+                      document.getElementById("name").innerHTML = data.user_name;
+                      document.getElementById("balance").innerHTML = data.balance;
+                      var jtransactions = data.transactions;
+                      var transactions = "<table cellpadding=10>";
+                      for (i=0; i < jtransactions.length; i++) {
+                          transactions += "<tr><td>" +
+                              jtransactions[i][0] +
+                              "</td><td></td><td>💵" +
+                              jtransactions[i][1] +
+                              "</td></tr>";
+                      }
+                      transactions += "</table>";
+                      document.getElementById("transactions").innerHTML = transactions;
+                  });
+              });
+      }
+
+      function transaction(type) {
+          document.getElementById(type).disabled = true;
+          var amount = document.getElementById(type + "_amount").value;
+          fetch("/json/" + type,
+                { method: "POST",
+                  headers: {
+                      'Content-Type': 'application/json',
+                  },
+                  body: "{\"amount\": " + amount + "}"
+                })
+              .then(function(res){ return res.json(); })
+              .then(function(data){
+                  console.log(JSON.stringify( data ));
+                  if (data.success) {
+                      alert("Successful " + type + " for 💵" + amount);
+                      account_info();
+                  } else {
+                      alert(data.message);
+                  }})
+              .finally(function() {
+                  document.getElementById(type).disabled = false;
+              });
+      }
+
+      account_info();
+      //-->
+    </script>
+  </head>
+
+  <body>
+    <h1>🏦 Best Bank 🏦</h1>
+    <h2>
+      <form action="/logout" method="post" accept-charset="utf-8">
+        Welcome to your account <b><i><span id="name"/></i></b>.
+        <input type="submit" id="logout" value="logout" />
+      </form>
+    </h2>
+    <table>
+      <tr>
+        <td style="text-align:left;background-color:palegreen; padding: 0px 0px;">
+        <div id="account_info">
+          <p>Balance: 💵 <span id="balance"/></p>
+        </div>
+        <td>
+      </tr>
+    </tr>
+    <tr>
+      <td style="text-align:left;background-color:gold; padding: 0px 0px;">
+        <div id="account_info">
+          <p>Transaction History<br/>
+            <pre>
+              <span id="transactions"/>
+            </pre>
+          </p>
+        </div>
+      </td>
+      <td valign="top" style="background-color:lightgray">
+        <p>What would you like to ?</p>
+        <div id="withdraw_div">
+          💵<input type="number" id="withdraw_amount"
+                   min="0.00" step="0.01" max="9999"
+                   placeholder="0.00" style="width: 120px" />
+          <input type="submit" id="withdraw" onclick="transaction('withdraw')" value="withdraw" />
+        </div>
+        <div id="deposit_div" style="padding: 10px;">
+          💵<input type="number" id="deposit_amount"
+                   min="0.00" step="0.01" max="9999"
+                   placeholder="0.00" style="width: 120px" />
+          <input type="submit" id="deposit" onclick="transaction('deposit')" value="deposit" />
+        </div>
+      </td>
+    </tr>
+  </table>
+</body>
+
+</html>
