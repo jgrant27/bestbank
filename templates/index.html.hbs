@@ -10,7 +10,14 @@
       html {
           font-family: "Verdana", san-serif;
       }
+      div {
+          padding-top: 5px;
+          padding-right: 3px;
+          padding-bottom: 5px;
+          padding-left: 8px;
+      }
     </style>
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
     <script>
     <!--
       function account_info() {
@@ -30,6 +37,7 @@
                       }
                       transactions += "</table>";
                       document.getElementById("transactions").innerHTML = transactions;
+                      window.setTimeout( account_info, 3000 );
                   });
               });
       }
@@ -49,7 +57,6 @@
                   console.log(JSON.stringify( data ));
                   if (data.success) {
                       alert("Successful " + type + " for 💵" + amount);
-                      account_info();
                   } else {
                       alert(data.message);
                   }})
@@ -59,6 +66,7 @@
       }
 
       account_info();
+
       //-->
     </script>
   </head>
@@ -73,7 +81,7 @@
     </h2>
     <table>
       <tr>
-        <td style="text-align:left;background-color:palegreen; padding: 0px 0px;">
+        <td style="text-align:left;background-color:palegreen;">
         <div id="account_info">
           <p>Balance: 💵 <span id="balance"/></p>
         </div>
@@ -81,7 +89,7 @@
       </tr>
     </tr>
     <tr>
-      <td style="text-align:left;background-color:gold; padding: 0px 0px;">
+      <td style="text-align:left;background-color:gold;">
         <div id="account_info">
           <p>Transaction History<br/>
             <pre>
@@ -90,13 +98,13 @@
           </p>
         </div>
       </td>
-      <td valign="top" style="background-color:lightgray">
+      <td valign="top" style="text-align:right;background-color:lightgray">
         <p>What would you like to do ?</p>
         <div id="transaction_div">
           💵<input type="number" id="transaction_amount"
                    min="0.00" step="0.01" max="9999"
-                   placeholder="0.00" style="width: 120px" />
-          <input type="submit" id="withdraw" onclick="transaction('withdraw')" value="withdraw" />
+                   placeholder="0.00" style="width: 120px" /><br/>
+          <input type="submit" id="withdraw" onclick="transaction('withdraw')" value="withdraw" /><br/>
           <input type="submit" id="deposit" onclick="transaction('deposit')" value="deposit" />
         </div>
       </td>

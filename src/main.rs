@@ -26,16 +26,20 @@ use rocket_contrib::serve::StaticFiles;
 
 
 #[get("/dump")]
-fn dump(state: State<Mutex<storage::Storage>>) -> String {
-    dbg!(calculate_hash(&"admin").to_string());
-    format!("{:?}", state.lock().unwrap())
+fn dump(state: State<Mutex<storage::Storage>>, user: User) -> String {
+    if "admin" == user.name {
+        format!("{:?}", state.lock().unwrap())
+    } else {
+        format!("{:?}", "Only admin can do this.")
+    }
 }
 
 fn rocket() -> rocket::Rocket {
     let credentials = hashmap!{String::from("admin") =>
                                calculate_hash(&"admin").to_string()};
-    let history = vec![(Utc::now(), 999.99f64)];
-    let transactions = hashmap!{String::from("admin") => history};
+    //let history = vec![(Utc::now(), 999.99f64)];
+    //let transactions = hashmap!{String::from("admin") => history};
+    let transactions = hashmap!{String::from("admin") => vec![]};
     let storage = Storage {credentials, transactions};
     rocket::ignite()
         .attach(Template::fairing())
