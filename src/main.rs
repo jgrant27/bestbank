@@ -22,6 +22,7 @@ use chrono::prelude::*;
 use rocket::State;
 //use rocket::response::content;
 use rocket_contrib::templates::Template;
+use rocket_contrib::serve::StaticFiles;
 
 
 #[get("/dump")]
@@ -38,6 +39,7 @@ fn rocket() -> rocket::Rocket {
     let storage = Storage {credentials, transactions};
     rocket::ignite()
         .attach(Template::fairing())
+        .mount("/", StaticFiles::from("static"))
         .mount("/", routes![index, user_index,
                             login, logout, login_user, login_page,
                             dump, account_info, withdraw, deposit])
