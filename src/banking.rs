@@ -5,14 +5,20 @@ use crate::storage::Storage;
 use crate::login::User;
 
 use rocket::State;
+use rocket::response::{Redirect};
 use rocket_contrib::templates::Template;
 use rocket_contrib::json::{Json, JsonValue};
 
 use chrono::prelude::*;
 
 
-#[get("/")]
-pub fn user_index(state: State<Mutex<Storage>>, user: User) -> Template {
+#[get("/user_banking", rank = 1)]
+pub fn user_banking_login() -> Redirect {
+    Redirect::to(uri!(crate::login::login_page))
+}
+
+#[get("/user_banking")]
+pub fn user_banking(state: State<Mutex<Storage>>, user: User) -> Template {
     let storage = state.lock().unwrap();
     let transactions = storage.transactions.get(&user.name).unwrap();
     let balance = transactions.iter().fold(0.0, |sum, (_, amount)| sum + *amount);
@@ -20,7 +26,7 @@ pub fn user_index(state: State<Mutex<Storage>>, user: User) -> Template {
     context.insert("user_name", user.name);
     context.insert("balance", format!("{:.*}", 2, balance));
     context.insert("transactions", format!("{:?}", transactions));
-    Template::render("index", &context)
+    Template::render("banking", &context)
 }
 
 #[get("/json/account_info")]
@@ -50,11 +56,12 @@ pub fn withdraw(payload: Json<Payload>,
     let mut storage = state.lock().unwrap();
     let transactions = storage.transactions.get_mut(&user.name).unwrap();
     let balance = transactions.iter().fold(0.0, |sum, (_, amount)| sum + *amount);
-    if balance > payload.amount {
+    if balance >= payload.amount {
         if payload.amount <= 0.0 {
             json!({ "success": false,
                      "message": "Withdrawal amount must be greater than 💵0." })
         } else {
+            send_ws_evt("withdrawal", payload.amount.clone());
             transactions.push((Utc::now(), -payload.amount));
             json!({ "success": true })
         }
@@ -62,19 +69,31 @@ pub fn withdraw(payload: Json<Payload>,
         json!({ "success": false,
                  "message": "Insufficient funds available." })
     }
-
 }
 
 #[post("/json/deposit", data = "<payload>")]
 pub fn deposit(payload: Json<Payload>,
-                state: State<Mutex<Storage>>, user: User) -> JsonValue {
+               state: State<Mutex<Storage>>, user: User) -> JsonValue {
     let mut storage = state.lock().unwrap();
     let transactions = storage.transactions.get_mut(&user.name).unwrap();
     if payload.amount > 0.0 {
+        send_ws_evt("deposit", payload.amount.clone());
         transactions.push((Utc::now(), payload.amount));
         json!({ "success": true })
     } else {
         json!({ "success": false,
                  "message": "Deposit amount must be greater than 💵0." })
     }
+}
+
+pub fn send_ws_evt(ttype: &'static str, pamount: f64) {
+    use ws::{connect, CloseCode};
+    use std::thread;
+    thread::spawn(move || {
+        connect("ws://0.0.0.0:8081", |out| {
+            out.send(format!("Successful {} for 💵{}",
+                             ttype.to_owned(), &pamount.to_owned())).unwrap();
+            move |_msg| { out.close(CloseCode::Normal) }
+        }).unwrap()
+    });
 }

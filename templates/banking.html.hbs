@@ -17,9 +17,36 @@
           padding-left: 8px;
       }
     </style>
-    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
     <script>
-    <!--
+    // <!--
+      function WebSocketTest() {
+          if ("WebSocket" in window) {
+              //alert("WebSocket is supported by your Browser!");
+              // Open a web socket
+              var ws = new WebSocket("ws://127.0.0.1:8081/");
+              // ws.onopen = function() {
+              //     // Web Socket is connected, send data using send()
+              //     ws.send("Message to send");
+              //     alert("Message is sent...");
+              // };
+              ws.onmessage = function (evt) {
+                  var msg = evt.data;
+                  //alert("Message is received... " + received_msg);
+                  alert(msg);
+                  account_info();
+              };
+              // ws.onclose = function() {
+              //     // websocket is closed.
+              //     alert("Connection is closed...");
+              // };
+          } else {
+              // The browser doesn't support WebSocket
+              alert("WebSocket NOT supported by your Browser!");
+
+          }
+      }
+      WebSocketTest();
+
       function account_info() {
           fetch('/json/account_info')
               .then(function(response) {
@@ -37,7 +64,6 @@
                       }
                       transactions += "</table>";
                       document.getElementById("transactions").innerHTML = transactions;
-                      window.setTimeout( account_info, 1000 );
                   });
               });
       }
@@ -54,9 +80,9 @@
                 })
               .then(function(res){ return res.json(); })
               .then(function(data){
-                  console.log(JSON.stringify( data ));
+                  console.log(JSON.stringify(data));
                   if (data.success) {
-                      alert("Successful " + type + " for 💵" + amount);
+                      ///alert("Successful " + type + " for 💵" + amount);
                   } else {
                       alert(data.message);
                   }})

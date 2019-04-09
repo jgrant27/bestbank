@@ -9,10 +9,7 @@ use rocket::State;
 
 use rocket_contrib::templates::Template;
 
-extern crate rocket_contrib;
-
 use crate::storage::Storage;
-use crate::hashing::*;
 
 
 #[derive(FromForm)]
@@ -44,26 +41,20 @@ pub fn login(state: State<Mutex<Storage>>,
     let storage = state.lock().unwrap();
     if storage.credentials.contains_key(&login.username) &&
         *storage.credentials.get(&login.username).unwrap() ==
-        calculate_hash(&login.password).to_string() {
+        crate::hashing::calculate_hash(&login.password).to_string() {
             cookies.add_private(Cookie::new("user_name", login.username.to_owned()));
-            Ok(Redirect::to(uri!(index)))
+            Ok(Redirect::to(uri!(crate::banking::user_banking)))
         } else {
             Err(Flash::error(Redirect::to(uri!(login_page)), "Invalid username/password."))
         }
 }
 
-#[post("/logout")]
-pub fn logout(mut cookies: Cookies) -> Flash<Redirect> {
-    cookies.remove_private(Cookie::named("user_name"));
-    Flash::success(Redirect::to(uri!(login_page)), "Successfully logged out.")
-}
-
 #[get("/login")]
 pub fn login_user(_user: User) -> Redirect {
-    Redirect::to(uri!(index))
+    Redirect::to(uri!(login_page))
 }
 
-#[get("/login", rank = 2)]
+#[get("/login", rank = 1)]
 pub fn login_page(flash: Option<FlashMessage>) -> Template {
     let mut context = HashMap::new();
     if let Some(ref msg) = flash {
@@ -73,7 +64,13 @@ pub fn login_page(flash: Option<FlashMessage>) -> Template {
     Template::render("login", &context)
 }
 
-#[get("/", rank = 2)]
+#[post("/logout")]
+pub fn logout(mut cookies: Cookies) -> Flash<Redirect> {
+    cookies.remove_private(Cookie::named("user_name"));
+    Flash::success(Redirect::to(uri!(login_page)), "Successfully logged out.")
+}
+
+#[get("/")]
 pub fn index() -> Redirect {
     Redirect::to(uri!(login_page))
 }
