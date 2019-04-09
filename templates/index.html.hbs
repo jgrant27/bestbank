@@ -36,7 +36,7 @@
 
       function transaction(type) {
           document.getElementById(type).disabled = true;
-          var amount = document.getElementById(type + "_amount").value;
+          var amount = document.getElementById("transaction_amount").value;
           fetch("/json/" + type,
                 { method: "POST",
                   headers: {
@@ -91,17 +91,12 @@
         </div>
       </td>
       <td valign="top" style="background-color:lightgray">
-        <p>What would you like to ?</p>
-        <div id="withdraw_div">
-          💵<input type="number" id="withdraw_amount"
+        <p>What would you like to do ?</p>
+        <div id="transaction_div">
+          💵<input type="number" id="transaction_amount"
                    min="0.00" step="0.01" max="9999"
                    placeholder="0.00" style="width: 120px" />
           <input type="submit" id="withdraw" onclick="transaction('withdraw')" value="withdraw" />
-        </div>
-        <div id="deposit_div" style="padding: 10px;">
-          💵<input type="number" id="deposit_amount"
-                   min="0.00" step="0.01" max="9999"
-                   placeholder="0.00" style="width: 120px" />
           <input type="submit" id="deposit" onclick="transaction('deposit')" value="deposit" />
         </div>
       </td>
