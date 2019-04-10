@@ -81,9 +81,7 @@
               .then(function(res){ return res.json(); })
               .then(function(data){
                   console.log(JSON.stringify(data));
-                  if (data.success) {
-                      ///alert("Successful " + type + " for 💵" + amount);
-                  } else {
+                  if (!data.success) {
                       alert(data.message);
                   }})
               .finally(function() {
