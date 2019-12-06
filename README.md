@@ -4,6 +4,7 @@
 - Secure Login / Logout.
 - Application level temporary memory safe data storage.
 - Templating using JSON endpoints for data.
+- Websockets.
 
 
 ### Install rust
