@@ -1,52 +1,60 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use rocket::outcome::IntoOutcome;
-use rocket::request::{self, Form, FlashMessage, FromRequest, Request};
-use rocket::response::{Redirect, Flash};
 use rocket::http::{Cookie, Cookies};
+use rocket::outcome::IntoOutcome;
+use rocket::request::{self, FlashMessage, Form, FromRequest, Request};
+use rocket::response::{Flash, Redirect};
 use rocket::State;
 
 use rocket_contrib::templates::Template;
 
 use crate::storage::Storage;
 
-
 #[derive(FromForm)]
 pub struct Login {
     pub username: String,
-    pub password: String
+    pub password: String,
 }
 
 #[derive(Debug)]
-pub struct User{
-    pub name: String
+pub struct User {
+    pub name: String,
 }
 
+#[rocket::async_trait]
 impl<'a, 'r> FromRequest<'a, 'r> for User {
-    type Error = !;
+    type Error = std::convert::Infallible;
 
-    fn from_request(request: &'a Request<'r>) -> request::Outcome<User, !> {
-        request.cookies()
+    async fn from_request(request: &'a Request<'r>) -> request::Outcome<Self, Self::Error> {
+        request
+            .cookies()
             .get_private("user_name")
             .and_then(|cookie| cookie.value().parse().ok())
-            .map(|name| User {name: name})
+            .map(|name| User { name: name })
             .or_forward(())
     }
 }
 
 #[post("/login", data = "<login>")]
-pub fn login(state: State<Mutex<Storage>>,
-         mut cookies: Cookies, login: Form<Login>) -> Result<Redirect, Flash<Redirect>> {
+pub fn login(
+    state: State<Mutex<Storage>>,
+    mut cookies: Cookies,
+    login: Form<Login>,
+) -> Result<Redirect, Flash<Redirect>> {
     let storage = state.lock().unwrap();
-    if storage.credentials.contains_key(&login.username) &&
-        *storage.credentials.get(&login.username).unwrap() ==
-        crate::hashing::calculate_hash(&login.password).to_string() {
-            cookies.add_private(Cookie::new("user_name", login.username.to_owned()));
-            Ok(Redirect::to(uri!(crate::banking::user_banking)))
-        } else {
-            Err(Flash::error(Redirect::to(uri!(login_page)), "Invalid username/password."))
-        }
+    if storage.credentials.contains_key(&login.username)
+        && *storage.credentials.get(&login.username).unwrap()
+            == crate::hashing::calculate_hash(&login.password).to_string()
+    {
+        cookies.add_private(Cookie::new("user_name", login.username.to_owned()));
+        Ok(Redirect::to(uri!(crate::banking::user_banking)))
+    } else {
+        Err(Flash::error(
+            Redirect::to(uri!(login_page)),
+            "Invalid username/password.",
+        ))
+    }
 }
 
 #[get("/login")]

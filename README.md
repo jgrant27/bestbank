@@ -11,15 +11,6 @@
 
 Follow the [instructions](https://www.rust-lang.org/tools/install) here.
 
-### Set nightly toolchain as the default
-
-```
-mbp2008:~ jgrant$ rustup default nightly
-info: using existing install for 'nightly-x86_64-apple-darwin'
-info: default toolchain set to 'nightly-x86_64-apple-darwin'
-
-  nightly-x86_64-apple-darwin unchanged - rustc 1.34.0-nightly (146aa60f3 2019-02-18)
-```
 
 ### Run the app
 
@@ -77,5 +68,3 @@ Warning: environment is 'production', but no `secret_key` is configured
 
 ## Log in
 User is admin:admin
-
-

@@ -1,21 +1,22 @@
 [package]
 name = "bestbank"
-version = "0.2.0"
+version = "0.4.0"
 authors = ["jgrant"]
 edition = "2018"
 
 [dependencies]
-t_bang = "0.1"
 maplit = "1"
 md5 = "0.7"
 chrono = "0.4"
-rocket = { version="0.4", features = ["private-cookies", "tls"] }
 serde = "1.0"
 serde_json = "1.0"
 serde_derive = "1.0"
 ws = "0.9"
 
+[dependencies.rocket]
+git = "https://github.com/SergioBenitez/Rocket"
+features = ["private-cookies", "tls"]
+
 [dependencies.rocket_contrib]
-version="0.4"
-#disable-features=false
-features=["json", "handlebars_templates"]
+git = "https://github.com/SergioBenitez/Rocket"
+features = ["json", "handlebars_templates"]
