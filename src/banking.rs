@@ -6,8 +6,8 @@ use crate::login::User;
 
 use rocket::State;
 use rocket::response::{Redirect};
-use rocket_contrib::templates::Template;
-use rocket_contrib::json::{Json, JsonValue};
+use rocket_dyn_templates::Template;
+use rocket::serde::json::{Json, Value, json};
 
 use chrono::prelude::*;
 
@@ -18,7 +18,7 @@ pub fn user_banking_login() -> Redirect {
 }
 
 #[get("/user_banking")]
-pub fn user_banking(state: State<Mutex<Storage>>, user: User) -> Template {
+pub fn user_banking(state: &State<Mutex<Storage>>, user: User) -> Template {
     let storage = state.lock().unwrap();
     let transactions = storage.transactions.get(&user.name).unwrap();
     let balance = transactions.iter().fold(0.0, |sum, (_, amount)| sum + *amount);
@@ -30,7 +30,7 @@ pub fn user_banking(state: State<Mutex<Storage>>, user: User) -> Template {
 }
 
 #[get("/json/account_info")]
-pub fn account_info(state: State<Mutex<Storage>>, user: User) -> JsonValue {
+pub fn account_info(state: &State<Mutex<Storage>>, user: User) -> Value {
     let storage = state.lock().unwrap();
     let transactions = storage.transactions.get(&user.name).unwrap();
     let mut transactions_json: Vec<(String, &f64)> = transactions.iter().map(|(datetime, amount)| {
@@ -52,7 +52,7 @@ pub struct Payload {
 
 #[post("/json/withdraw", data = "<payload>")]
 pub fn withdraw(payload: Json<Payload>,
-                state: State<Mutex<Storage>>, user: User) -> JsonValue {
+                state: &State<Mutex<Storage>>, user: User) -> Value {
     let mut storage = state.lock().unwrap();
     let transactions = storage.transactions.get_mut(&user.name).unwrap();
     let balance = transactions.iter().fold(0.0, |sum, (_, amount)| sum + *amount);
@@ -73,7 +73,7 @@ pub fn withdraw(payload: Json<Payload>,
 
 #[post("/json/deposit", data = "<payload>")]
 pub fn deposit(payload: Json<Payload>,
-               state: State<Mutex<Storage>>, user: User) -> JsonValue {
+               state: &State<Mutex<Storage>>, user: User) -> Value {
     let mut storage = state.lock().unwrap();
     let transactions = storage.transactions.get_mut(&user.name).unwrap();
     if payload.amount > 0.0 {
