@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use rocket::http::{Cookie, CookieJar};
+use rocket::http::{Cookie, CookieJar, Status};
 use rocket::outcome::IntoOutcome;
 use rocket::request::{self, FlashMessage, FromRequest, Request};
 use rocket::response::{Flash, Redirect};
@@ -34,7 +34,7 @@ impl<'r> FromRequest<'r> for User {
             .get("user_name")
             .and_then(|cookie| cookie.value().parse().ok())
             .map(|name| User { name: name })
-            .or_forward(())
+            .or_forward(Status::Ok)
     }
 }
 
