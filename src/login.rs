@@ -65,8 +65,8 @@ pub fn login_user(_user: User) -> Redirect {
 }
 
 #[get("/login", rank = 1)]
-pub fn login_page(flash: Option<FlashMessage>) -> Template {
-    let mut context: HashMap<String, String> = HashMap::new();
+pub fn login_page(_flash: Option<FlashMessage>) -> Template {
+    let context: HashMap<String, String> = HashMap::new();
 
     // if let Some(ref msg) = flash {
     //     context.insert("flash", msg.msg());
@@ -77,7 +77,7 @@ pub fn login_page(flash: Option<FlashMessage>) -> Template {
 
 #[post("/logout")]
 pub fn logout(jar: &CookieJar<'_>) -> Flash<Redirect> {
-    jar.remove(Cookie::named("user_name"));
+    jar.remove(Cookie::from("user_name"));
     Flash::success(Redirect::to(uri!(login_page)), "Successfully logged out.")
 }
 

@@ -6,8 +6,6 @@ extern crate maplit;
 extern crate rocket;
 #[macro_use]
 extern crate serde_derive;
-#[macro_use]
-extern crate ws;
 
 
 #[cfg(test)]

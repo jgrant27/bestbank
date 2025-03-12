@@ -1,8 +1,8 @@
 [package]
 name = "bestbank"
-version = "0.5.1"
+version = "0.6.0"
 authors = ["jgrant"]
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 maplit = "1"
