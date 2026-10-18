@@ -15,6 +15,7 @@ mod csrf;
 mod db;
 mod events;
 mod hashing;
+mod headers;
 mod login;
 mod money;
 mod ratelimit;
@@ -63,6 +64,8 @@ async fn dump(db: &State<Db>, user: login::User) -> Result<Value, Status> {
 fn build(figment: Figment) -> Rocket<Build> {
     rocket::custom(figment)
         .attach(telemetry::RequestLogger)
+        .attach(headers::shield())
+        .attach(headers::SecurityHeaders)
         .attach(Template::fairing())
         .attach(db::stage())
         .mount(
@@ -89,7 +92,7 @@ fn build(figment: Figment) -> Rocket<Build> {
                 dump,
             ],
         )
-        // Static assets (favicon). Mounted under /static so its 404s don't
+        // Static assets (favicon, CSS, JS). Mounted under /static so its 404s don't
         // mask the 401s from guarded routes. Path is relative to the working
         // directory (like `templates/`).
         .mount("/static", FileServer::from("static"))

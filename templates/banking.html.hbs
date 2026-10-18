@@ -1,161 +1,60 @@
-<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
-
-<html>
-
+<!DOCTYPE html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width" />
     <title>🏦 Best Bank 🏦</title>
     <link rel="icon" href="/static/favicon.ico" />
+    <link rel="stylesheet" href="/static/style.css" />
     <meta name="csrf-token" content="{{ csrf_token }}" />
-    <style>
-      html {
-          font-family: "Verdana", san-serif;
-      }
-      div {
-          padding-top: 5px;
-          padding-right: 3px;
-          padding-bottom: 5px;
-          padding-left: 8px;
-      }
-    </style>
-    <script>
-    // <!--
-      function WebSocketTest() {
-          if ("WebSocket" in window) {
-              //alert("WebSocket is supported by your Browser!");
-              // Open a web socket
-              // Same origin as the page; the session cookie authenticates us.
-              var scheme = window.location.protocol === "https:" ? "wss://" : "ws://";
-              var ws = new WebSocket(scheme + window.location.host + "/ws");
-              // ws.onopen = function() {
-              //     // Web Socket is connected, send data using send()
-              //     ws.send("Message to send");
-              //     alert("Message is sent...");
-              // };
-              ws.onmessage = function (evt) {
-                  var msg = evt.data;
-                  //alert("Message is received... " + received_msg);
-                  alert(msg);
-                  account_info();
-              };
-              // ws.onclose = function() {
-              //     // websocket is closed.
-              //     alert("Connection is closed...");
-              // };
-          } else {
-              // The browser doesn't support WebSocket
-              alert("WebSocket NOT supported by your Browser!");
-
-          }
-      }
-      WebSocketTest();
-
-      function account_info() {
-          fetch('/json/account_info')
-              .then(function(response) {
-                  response.json().then(function(data) {
-                      document.getElementById("name").textContent = data.user_name;
-                      document.getElementById("balance").textContent = data.balance;
-                      // Build the table with textContent so values (e.g. a
-                      // counterparty's name) can never be interpreted as HTML.
-                      var labels = { deposit: "deposit", withdrawal: "withdrawal",
-                                     transfer_out: "sent to", transfer_in: "received from" };
-                      var table = document.createElement("table");
-                      table.cellPadding = 10;
-                      data.transactions.forEach(function (tx) {
-                          var row = table.insertRow();
-                          row.insertCell().textContent = tx.time;
-                          var what = labels[tx.kind] || tx.kind;
-                          if (tx.counterparty) { what += " " + tx.counterparty; }
-                          row.insertCell().textContent = what;
-                          row.insertCell().textContent = "💵" + tx.amount;
-                      });
-                      var container = document.getElementById("transactions");
-                      container.replaceChildren(table);
-                  });
-              });
-      }
-
-      function transaction(type) {
-          document.getElementById(type).disabled = true;
-          var amount = parseFloat(document.getElementById("transaction_amount").value);
-          var body = { amount: amount };
-          if (type === "transfer") {
-              body.to = document.getElementById("transfer_to").value;
-          }
-          fetch("/json/" + type,
-                { method: "POST",
-                  headers: {
-                      'Content-Type': 'application/json',
-                      'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content,
-                  },
-                  body: JSON.stringify(body)
-                })
-              .then(function(res){ return res.json(); })
-              .then(function(data){
-                  console.log(JSON.stringify(data));
-                  if (!data.success) {
-                      alert(data.message);
-                  }})
-              .finally(function() {
-                  document.getElementById(type).disabled = false;
-              });
-      }
-
-      account_info();
-
-      //-->
-    </script>
+    <script src="/static/banking.js" defer></script>
   </head>
 
   <body>
+    <div id="toasts" aria-live="polite"></div>
     <h1>🏦 Best Bank 🏦</h1>
     <h2>
-      <form action="/logout" method="post" accept-charset="utf-8">
+      Welcome to your account <b><i><span id="name"></span></i></b>.
+      <form class="inline" action="/logout" method="post" accept-charset="utf-8">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-        Welcome to your account <b><i><span id="name"/></i></b>.
         <input type="submit" id="logout" value="logout" />
       </form>
-      <form action="/logout_all" method="post" accept-charset="utf-8">
+      <form class="inline" action="/logout_all" method="post" accept-charset="utf-8">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
         <input type="submit" id="logout_all" value="log out everywhere" />
       </form>
     </h2>
-    <table>
+    <table class="layout">
       <tr>
-        <td style="text-align:left;background-color:palegreen;">
-        <div id="account_info">
-          <p>Balance: 💵 <span id="balance"/></p>
-        </div>
-        <td>
+        <td class="balance" colspan="2">
+          <p>Balance: 💵 <span id="balance"></span></p>
+        </td>
       </tr>
-    </tr>
-    <tr>
-      <td style="text-align:left;background-color:gold;">
-        <div id="account_info">
-          <p>Transaction History<br/>
-            <pre>
-              <span id="transactions"/>
-            </pre>
+      <tr>
+        <td class="history">
+          <p>Transaction History</p>
+          <div id="transactions"></div>
+        </td>
+        <td class="actions">
+          <p>What would you like to do ?</p>
+          <p>
+            <label for="transaction_amount">💵</label>
+            <input type="number" id="transaction_amount"
+                   min="0.01" step="0.01" max="1000000"
+                   placeholder="0.00" />
           </p>
-        </div>
-      </td>
-      <td valign="top" style="text-align:right;background-color:lightgray">
-        <p>What would you like to do ?</p>
-        <div id="transaction_div">
-          💵<input type="number" id="transaction_amount"
-                   min="0.00" step="0.01" max="9999"
-                   placeholder="0.00" style="width: 120px" /><br/>
-          <input type="submit" id="withdraw" onclick="transaction('withdraw')" value="withdraw" /><br/>
-          <input type="submit" id="deposit" onclick="transaction('deposit')" value="deposit" /><br/>
-          <input type="text" id="transfer_to" placeholder="recipient username"
-                 maxlength="32" style="width: 140px" />
-          <input type="submit" id="transfer" onclick="transaction('transfer')" value="transfer" />
-        </div>
-      </td>
-    </tr>
-  </table>
-</body>
-
+          <p>
+            <button type="button" id="withdraw" data-action="withdraw">withdraw</button>
+            <button type="button" id="deposit" data-action="deposit">deposit</button>
+          </p>
+          <p>
+            <label for="transfer_to">to</label>
+            <input type="text" id="transfer_to" placeholder="recipient username"
+                   maxlength="32" autocomplete="off" />
+            <button type="button" id="transfer" data-action="transfer">transfer</button>
+          </p>
+        </td>
+      </tr>
+    </table>
+  </body>
 </html>

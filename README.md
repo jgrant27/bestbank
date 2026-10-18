@@ -95,7 +95,7 @@ Set `allow_registration = false` in `Rocket.toml` (or
 | GET    | `/ws`                | user  | WebSocket: your own transaction events    |
 | GET    | `/json/csrf`         | –     | Current CSRF token (for API clients)      |
 | GET    | `/dump`              | admin | Users, balances, transaction counts (JSON) |
-| GET    | `/static/*`          | –     | Static files (favicon)                    |
+| GET    | `/static/*`          | –     | Static files (favicon, CSS, JS)           |
 
 Amounts must be positive, have at most two decimal places and be at most
 1,000,000.00 per transaction; withdrawals and transfers can't overdraw. Invalid requests get
@@ -156,6 +156,18 @@ What the demo does:
   `allowed_origins`.
 - WebSocket connections require a logged-in session and only receive that
   user's events.
+- Every response carries a strict `Content-Security-Policy`
+  (`default-src 'none'`; scripts, styles, images and connections only from
+  the same origin; no `unsafe-inline`/`unsafe-eval`; `form-action 'self'`;
+  `frame-ancestors 'none'`). All JS and CSS live in `static/` (no inline
+  `<script>`, `<style>`, `style=` or `on*=` handlers; tests enforce this),
+  and the page builds the DOM with `textContent`, so values from the server
+  (usernames, messages) are never parsed as HTML. Notifications are toasts
+  instead of `alert()`.
+- Rocket's `Shield` adds `X-Frame-Options: DENY`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, a
+  `Permissions-Policy` that blocks camera/mic/geolocation/payment/USB, and
+  HSTS when TLS is enabled. Non-static responses are `Cache-Control: no-store`.
 
 - Brute-force protection: login and registration attempts are limited per
   client IP (`login_rate_limit` per `rate_limit_window_secs`, default 10/min;

@@ -1524,3 +1524,216 @@ async fn concurrent_transfers_conserve_money_and_never_overdraw() {
     let withdrawn = i64::try_from(withdrawals_ok).unwrap() * 100;
     assert_eq!(total + withdrawn, 2000, "money is conserved");
 }
+
+fn assert_security_headers(response: &LocalResponse<'_>, what: &str, cacheable: bool) {
+    let headers = response.headers();
+    assert_eq!(
+        headers.get_one("Content-Security-Policy"),
+        Some(crate::headers::CONTENT_SECURITY_POLICY),
+        "{what}"
+    );
+    assert_eq!(headers.get_one("X-Frame-Options"), Some("DENY"), "{what}");
+    assert_eq!(
+        headers.get_one("X-Content-Type-Options"),
+        Some("nosniff"),
+        "{what}"
+    );
+    assert_eq!(
+        headers.get_one("Referrer-Policy"),
+        Some("same-origin"),
+        "{what}"
+    );
+    let permissions = headers.get_one("Permissions-Policy").unwrap_or_default();
+    for feature in ["camera=()", "microphone=()", "geolocation=()", "payment=()"] {
+        assert!(permissions.contains(feature), "{what}: {permissions}");
+    }
+    let cache = headers.get_one("Cache-Control");
+    if cacheable {
+        assert_ne!(cache, Some("no-store"), "{what}");
+    } else {
+        assert_eq!(cache, Some("no-store"), "{what}");
+    }
+}
+
+#[test]
+fn csp_forbids_inline_code_and_foreign_origins() {
+    let csp = crate::headers::CONTENT_SECURITY_POLICY;
+    for directive in [
+        "default-src 'none'",
+        "script-src 'self'",
+        "style-src 'self'",
+        "connect-src 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+        "base-uri 'none'",
+    ] {
+        assert!(csp.contains(directive), "{directive}");
+    }
+    assert!(!csp.contains("unsafe-"), "no unsafe-inline / unsafe-eval");
+    assert!(!csp.contains('*'), "no wildcards");
+}
+
+#[test]
+fn security_headers_are_on_every_kind_of_response() {
+    let figment = figment("sqlite::memory:").merge(("login_rate_limit", 1));
+    let client = Client::tracked(super::build(figment)).unwrap();
+    for (path, status) in [
+        ("/login", Status::Ok),
+        ("/register", Status::Ok),
+        ("/", Status::SeeOther),
+        ("/json/csrf", Status::Ok),
+        ("/json/account_info", Status::Unauthorized),
+        ("/no/such/page", Status::NotFound),
+    ] {
+        let response = client.get(path).dispatch();
+        assert_eq!(response.status(), status, "{path}");
+        assert_security_headers(&response, path, false);
+    }
+    let response = client.get("/static/style.css").dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    assert_security_headers(&response, "static", true);
+
+    login_from(&client, "10.9.9.9", "admin", "wrong");
+    let response = login_from(&client, "10.9.9.9", "admin", "wrong");
+    assert_eq!(response.status(), Status::TooManyRequests);
+    assert_security_headers(&response, "429", false);
+
+    login(&client, "admin", "admin");
+    let response = client.get("/user_banking").dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    assert_security_headers(&response, "banking page", false);
+    let (status, _) = post_json(&client, "/json/deposit", r#"{"amount": 1}"#);
+    assert_eq!(status, Status::Ok);
+}
+
+/// Every `attr="..."` value in `html`.
+fn attribute_values<'h>(html: &'h str, attr: &str) -> Vec<&'h str> {
+    let needle = format!(" {attr}=\"");
+    html.match_indices(&needle)
+        .map(|(i, _)| {
+            let rest = &html[i + needle.len()..];
+            &rest[..rest.find('"').unwrap()]
+        })
+        .collect()
+}
+
+/// Pages that a CSP without 'unsafe-inline' would break: inline `<script>`
+/// bodies, `<style>` blocks, `style=` attributes, `on*=` event handlers and
+/// `javascript:` URLs.
+fn assert_csp_compatible(html: &str, page: &str) {
+    let lower = html.to_ascii_lowercase();
+    assert!(!lower.contains("<style"), "{page}: <style> block");
+    assert!(!lower.contains(" style="), "{page}: style attribute");
+    assert!(!lower.contains("javascript:"), "{page}: javascript: URL");
+    for (i, _) in lower.match_indices("<script") {
+        let tag = &lower[i..i + lower[i..].find('>').unwrap()];
+        assert!(
+            tag.contains(" src=\"/static/"),
+            "{page}: inline script {tag}"
+        );
+        assert!(
+            lower[i..].trim_start_matches(tag).starts_with("></script>"),
+            "{page}: script tag with a body"
+        );
+    }
+    // Attribute names inside each tag (text between tags is ignored).
+    for tag in lower.split('<').skip(1).filter_map(|t| t.split('>').next()) {
+        for attr in tag.split_whitespace().skip(1) {
+            let name = attr.split('=').next().unwrap_or_default();
+            assert!(
+                !(name.len() > 2
+                    && name.starts_with("on")
+                    && name.bytes().all(|b| b.is_ascii_lowercase())),
+                "{page}: inline event handler {attr}"
+            );
+        }
+    }
+}
+
+#[test]
+fn pages_have_no_inline_code_and_their_assets_are_served() {
+    let client = client();
+    let mut pages = vec![
+        (
+            "login",
+            client.get("/login").dispatch().into_string().unwrap(),
+        ),
+        (
+            "register",
+            client.get("/register").dispatch().into_string().unwrap(),
+        ),
+    ];
+    login(&client, "admin", "admin");
+    pages.push((
+        "banking",
+        client
+            .get("/user_banking")
+            .dispatch()
+            .into_string()
+            .unwrap(),
+    ));
+    for (page, html) in &pages {
+        assert_csp_compatible(html, page);
+        assert!(html.contains(r#"href="/static/style.css""#), "{page}");
+        let assets: Vec<&str> = attribute_values(html, "src")
+            .into_iter()
+            .chain(attribute_values(html, "href"))
+            .filter(|url| url.starts_with("/static/"))
+            .collect();
+        for url in assets {
+            let response = client.get(url).dispatch();
+            assert_eq!(response.status(), Status::Ok, "{page}: {url}");
+            let expected = match url.rsplit('.').next() {
+                Some("css") => ContentType::CSS,
+                Some("js") => ContentType::JavaScript,
+                _ => continue,
+            };
+            assert_eq!(response.content_type(), Some(expected), "{url}");
+        }
+    }
+    assert!(pages[2].1.contains(r#"src="/static/banking.js""#));
+    // Every action button is wired up by the script via data-action.
+    for action in ["withdraw", "deposit", "transfer"] {
+        assert!(
+            pages[2].1.contains(&format!(r#"data-action="{action}""#)),
+            "{action}"
+        );
+    }
+}
+
+#[test]
+fn csp_checker_catches_inline_code() {
+    for bad in [
+        "<script>alert(1)</script>",
+        r#"<script src="/static/a.js">alert(1)</script>"#,
+        r#"<script src="https://evil.example/x.js"></script>"#,
+        "<style>p{}</style>",
+        r#"<p style="color:red">"#,
+        r#"<button onclick="go()">"#,
+        r#"<body onload="go()">"#,
+        r#"<a href="javascript:go()">"#,
+    ] {
+        let result = std::panic::catch_unwind(|| assert_csp_compatible(bad, "test"));
+        assert!(result.is_err(), "not caught: {bad}");
+    }
+    assert_csp_compatible(
+        r#"<script src="/static/banking.js" defer></script><p data-on="x">online onclick=yes</p>"#,
+        "ok",
+    );
+}
+
+#[test]
+fn banking_script_never_injects_html_or_uses_alert() {
+    let js = std::fs::read_to_string("static/banking.js").unwrap();
+    for banned in [
+        "innerHTML",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+        "alert(",
+        "eval(",
+    ] {
+        assert!(!js.contains(banned), "static/banking.js uses {banned}");
+    }
+    assert!(js.contains("textContent"));
+}

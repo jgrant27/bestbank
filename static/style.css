@@ -1,0 +1,46 @@
+/* Shared styles for all Best Bank pages. Served from /static so the
+   Content-Security-Policy can forbid inline styles. */
+html {
+    font-family: "Verdana", sans-serif;
+}
+
+.flash { color: black; padding: 4px; background-color: tomato; }
+.flash.success { background-color: palegreen; }
+.hint { font-size: small; color: dimgray; }
+
+.inline { display: inline; }
+
+.layout { border-collapse: separate; border-spacing: 4px; }
+.layout td { padding: 5px 3px 5px 8px; vertical-align: top; }
+.balance { background-color: palegreen; }
+.history { background-color: gold; }
+.actions { background-color: lightgray; text-align: right; }
+.actions input[type="number"] { width: 120px; }
+.actions input[type="text"] { width: 140px; }
+
+.transactions { border-collapse: collapse; font-family: monospace; }
+.transactions td { padding: 4px 10px; }
+.transactions .amount { text-align: right; }
+.transactions .empty { font-style: italic; }
+
+/* Toast notifications (replace alert()). */
+#toasts {
+    position: fixed;
+    top: 1em;
+    right: 1em;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    z-index: 10;
+}
+.toast {
+    padding: 0.6em 1em;
+    border-radius: 4px;
+    background-color: palegreen;
+    color: black;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+    max-width: 24em;
+    cursor: pointer;
+}
+.toast.error { background-color: tomato; }
+.toast.info { background-color: lightblue; }
