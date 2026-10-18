@@ -1,11 +1,18 @@
-[global]
+# Rocket 0.5 configuration. Profiles are `debug` (used by `cargo run`) and
+# `release` (used by `cargo run --release`); `default` applies to both.
+# Any value can be overridden with ROCKET_<KEY> environment variables.
+
+[default]
 address = "0.0.0.0"
 
-[dev]
+[debug]
 port = 8080
 
-[prod]
+[release]
 port = 8443
+# A `secret_key` is REQUIRED in release because sessions use encrypted
+# private cookies. Don't commit one; supply it via the environment:
+#   ROCKET_SECRET_KEY=$(openssl rand -base64 32) cargo run --release
 
 # The certificate/private key pair used here was generated via openssl using the
 # `gen_cert.sh` script located in the `private/` subdirectory.
@@ -13,6 +20,6 @@ port = 8443
 # The certificate is self-signed. As such, you will need to trust it directly
 # for your browser to refer to the connection as secure. You should NEVER use
 # this certificate/key pair. It is here for DEMONSTRATION PURPOSES ONLY.
-[prod.tls]
+[release.tls]
 certs = "private/cert.pem"
 key = "private/key.pem"

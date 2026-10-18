@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use rocket::http::{Cookie, CookieJar, Status};
+use rocket::http::{Cookie, CookieJar, SameSite, Status};
 use rocket::outcome::IntoOutcome;
 use rocket::request::{self, FlashMessage, FromRequest, Request};
 use rocket::response::{Flash, Redirect};
@@ -12,6 +12,9 @@ use rocket_dyn_templates::Template;
 
 
 use crate::storage::Storage;
+
+/// Name of the (private, encrypted) session cookie.
+pub const SESSION_COOKIE: &str = "user_name";
 
 #[derive(FromForm)]
 pub struct Login {
@@ -29,12 +32,20 @@ impl<'r> FromRequest<'r> for User {
     type Error = std::convert::Infallible;
 
     async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
-        request
+        // The session cookie is a Rocket *private* cookie: it is encrypted and
+        // authenticated with the app's secret key, so a client cannot forge or
+        // tamper with it. We additionally check that the user still exists.
+        let name = request
             .cookies()
-            .get("user_name")
-            .and_then(|cookie| cookie.value().parse().ok())
-            .map(|name| User { name: name })
-            .or_forward(Status::Ok)
+            .get_private(SESSION_COOKIE)
+            .map(|cookie| cookie.value().to_owned());
+        let exists = match (&name, request.rocket().state::<Mutex<Storage>>()) {
+            (Some(name), Some(state)) => crate::storage::lock(state).credentials.contains_key(name),
+            _ => false,
+        };
+        name.filter(|_| exists)
+            .map(|name| User { name })
+            .or_forward(Status::Unauthorized)
     }
 }
 
@@ -43,19 +54,28 @@ pub fn login(
     state: &State<Mutex<Storage>>,
     jar: &CookieJar<'_>,
     login: Form<Login>,
-) -> Result<Redirect, Flash<Redirect>> {
-    let storage = state.lock().unwrap();
-    if storage.credentials.contains_key(&login.username)
-        && *storage.credentials.get(&login.username).unwrap()
-            == crate::hashing::calculate_hash(&login.password).to_string()
-    {
-        jar.add(Cookie::new("user_name", login.username.to_owned()));
+) -> Result<Redirect, Box<Flash<Redirect>>> {
+    // Copy the stored hash out so the (deliberately slow) Argon2 check
+    // runs without holding the storage lock.
+    let stored_hash = crate::storage::lock(state)
+        .credentials
+        .get(&login.username)
+        .cloned();
+    if stored_hash.is_some_and(|hash| crate::hashing::verify_password(&login.password, &hash)) {
+        // SameSite=Strict stops browsers sending the session cookie on
+        // cross-site requests, which is the CSRF protection for our POST
+        // routes. HttpOnly keeps it away from page scripts.
+        jar.add_private(
+            Cookie::build((SESSION_COOKIE, login.username.clone()))
+                .http_only(true)
+                .same_site(SameSite::Strict),
+        );
         Ok(Redirect::to(uri!(crate::banking::user_banking)))
     } else {
-        Err(Flash::error(
+        Err(Box::new(Flash::error(
             Redirect::to(uri!(login_page)),
             "Invalid username/password.",
-        ))
+        )))
     }
 }
 
@@ -65,19 +85,18 @@ pub fn login_user(_user: User) -> Redirect {
 }
 
 #[get("/login", rank = 1)]
-pub fn login_page(_flash: Option<FlashMessage>) -> Template {
-    let context: HashMap<String, String> = HashMap::new();
-
-    // if let Some(ref msg) = flash {
-    //     context.insert("flash", msg.msg());
-    // }
-
+pub fn login_page(flash: Option<FlashMessage<'_>>) -> Template {
+    let mut context: HashMap<&str, &str> = HashMap::new();
+    if let Some(ref flash) = flash {
+        context.insert("flash", flash.message());
+        context.insert("flash_kind", flash.kind());
+    }
     Template::render("login", &context)
 }
 
 #[post("/logout")]
 pub fn logout(jar: &CookieJar<'_>) -> Flash<Redirect> {
-    jar.remove(Cookie::from("user_name"));
+    jar.remove_private(Cookie::from(SESSION_COOKIE));
     Flash::success(Redirect::to(uri!(login_page)), "Successfully logged out.")
 }
 
