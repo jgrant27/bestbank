@@ -40,9 +40,16 @@ pub async fn account_info(db: &State<Db>, user: User) -> Result<Value, Status> {
     let transactions = db::transactions(db, user.id)
         .await
         .map_err(|e| db_error(&e))?;
-    let transactions_json: Vec<(String, String)> = transactions
+    let transactions_json: Vec<Value> = transactions
         .iter()
-        .map(|tx| (tx.timestamp().to_rfc2822(), format_cents(tx.amount_cents)))
+        .map(|tx| {
+            json!({
+                "time": tx.timestamp().to_rfc2822(),
+                "amount": format_cents(tx.amount_cents),
+                "kind": tx.kind,
+                "counterparty": tx.counterparty,
+            })
+        })
         .collect();
     Ok(json!({
         "user_name": user.name,
@@ -140,6 +147,83 @@ pub async fn deposit(
     events.publish(
         &user.name,
         format!("Successful deposit for 💵{}", format_cents(cents)),
+    );
+    (Status::Ok, json!({ "success": true }))
+}
+
+/// Request body for transfers: recipient username and decimal amount.
+#[derive(serde::Deserialize)]
+pub struct TransferPayload {
+    to: String,
+    amount: f64,
+}
+
+#[post("/json/transfer", data = "<payload>")]
+pub async fn transfer(
+    payload: Result<Json<TransferPayload>, json::Error<'_>>,
+    db: &State<Db>,
+    events: &State<Events>,
+    user: User,
+    csrf: Result<CsrfHeader, CsrfError>,
+    request_id: RequestId,
+) -> ApiResponse {
+    if let Err(e) = csrf {
+        return csrf_failure(&e);
+    }
+    let Ok(payload) = payload else {
+        return failure(
+            Status::BadRequest,
+            "Request body must be JSON like {\"to\": \"bob\", \"amount\": 12.34}.",
+        );
+    };
+    let cents = match parse_amount(payload.amount) {
+        Ok(cents) => cents,
+        Err(msg) => return failure(Status::UnprocessableEntity, msg),
+    };
+    let to_name = payload.to.trim();
+    if to_name.is_empty() {
+        return failure(Status::UnprocessableEntity, "Choose who to send money to.");
+    }
+    let recipient = match db::find_user(db, to_name).await {
+        Ok(Some(recipient)) => recipient,
+        Ok(None) => return failure(Status::UnprocessableEntity, "No such recipient."),
+        Err(e) => return server_error(&e),
+    };
+    if recipient.id == user.id {
+        return failure(
+            Status::UnprocessableEntity,
+            "You can't transfer money to yourself.",
+        );
+    }
+    match db::transfer(db, user.id, recipient.id, cents).await {
+        Ok(Ok(())) => {}
+        Ok(Err(db::TransferError::InsufficientFunds)) => {
+            return failure(Status::UnprocessableEntity, "Insufficient funds available.");
+        }
+        Ok(Err(db::TransferError::RecipientLimit)) => {
+            return failure(
+                Status::UnprocessableEntity,
+                "The recipient can't receive that amount.",
+            );
+        }
+        Err(e) => return server_error(&e),
+    }
+    let amount = format_cents(cents);
+    tracing::info!(
+        request_id = %request_id.0,
+        from = ?user.name,
+        to = ?recipient.username,
+        cents,
+        kind = "transfer",
+        "transaction"
+    );
+    events.publish(
+        &user.name,
+        format!("Sent 💵{amount} to {}", recipient.username),
+    );
+    events.publish(
+        &recipient.username,
+        format!("Received 💵{amount} from {}", user.name),
     );
     (Status::Ok, json!({ "success": true }))
 }

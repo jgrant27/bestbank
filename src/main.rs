@@ -83,6 +83,7 @@ fn build(figment: Figment) -> Rocket<Build> {
                 banking::account_info,
                 banking::withdraw,
                 banking::deposit,
+                banking::transfer,
                 events::ws,
                 csrf::token,
                 dump,

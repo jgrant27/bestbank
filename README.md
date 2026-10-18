@@ -91,17 +91,27 @@ Set `allow_registration = false` in `Rocket.toml` (or
 | GET    | `/json/account_info` | user  | Balance and history, newest first         |
 | POST   | `/json/deposit`      | user  | JSON `{"amount": 12.34}` + `X-CSRF-Token` |
 | POST   | `/json/withdraw`     | user  | JSON `{"amount": 12.34}` + `X-CSRF-Token` |
+| POST   | `/json/transfer`     | user  | JSON `{"to": "bob", "amount": 12.34}` + `X-CSRF-Token` |
 | GET    | `/ws`                | user  | WebSocket: your own transaction events    |
 | GET    | `/json/csrf`         | –     | Current CSRF token (for API clients)      |
 | GET    | `/dump`              | admin | Users, balances, transaction counts (JSON) |
 | GET    | `/static/*`          | –     | Static files (favicon)                    |
 
 Amounts must be positive, have at most two decimal places and be at most
-1,000,000.00 per transaction; withdrawals can't overdraw. Invalid requests get
+1,000,000.00 per transaction; withdrawals and transfers can't overdraw. Invalid requests get
 a 4xx status with `{"success": false, "message": "..."}` (403 for a missing
 or wrong CSRF token or a cross-origin request). All form POSTs need the
 `csrf_token` field. Unauthenticated API
 requests get `401`.
+
+Transfers move money to another user (recipient matched case-insensitively,
+not yourself). The debit and the credit are written in one `BEGIN IMMEDIATE`
+transaction, so a transfer either fully happens or not at all, and concurrent
+transfers can't overdraw. Each side's history entry has a `kind`
+(`deposit`, `withdrawal`, `transfer_out`, `transfer_in`) and, for transfers,
+the other party's `counterparty` username. Both users get a WebSocket event.
+Note that "No such recipient." tells the sender whether a username exists;
+that's inherent to a transfer-by-username feature.
 
 ### Logging
 

@@ -110,6 +110,10 @@ impl UserRow {
 pub struct TransactionRow {
     pub amount_cents: Cents,
     pub created_at: i64,
+    /// `deposit`, `withdrawal`, `transfer_out` or `transfer_in`.
+    pub kind: String,
+    /// The other user, for transfers.
+    pub counterparty: Option<String>,
 }
 
 impl TransactionRow {
@@ -226,7 +230,9 @@ pub async fn balance(db: &Db, user_id: i64) -> Result<Cents, sqlx::Error> {
 /// Transaction history, newest first.
 pub async fn transactions(db: &Db, user_id: i64) -> Result<Vec<TransactionRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT amount_cents, created_at FROM transactions WHERE user_id = ? ORDER BY id DESC",
+        "SELECT t.amount_cents, t.created_at, t.kind, u.username AS counterparty
+         FROM transactions t LEFT JOIN users u ON u.id = t.counterparty_id
+         WHERE t.user_id = ? ORDER BY t.id DESC",
     )
     .bind(user_id)
     .fetch_all(db)
@@ -237,8 +243,8 @@ pub async fn transactions(db: &Db, user_id: i64) -> Result<Vec<TransactionRow>, 
 pub async fn deposit(db: &Db, user_id: i64, cents: Cents) -> Result<bool, sqlx::Error> {
     // Single conditional INSERT, so the check and the write are atomic.
     let result = sqlx::query(
-        "INSERT INTO transactions (user_id, amount_cents, created_at)
-         SELECT ?1, ?2, ?3
+        "INSERT INTO transactions (user_id, amount_cents, created_at, kind)
+         SELECT ?1, ?2, ?3, 'deposit'
          WHERE (SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ?1)
                <= ?4 - ?2",
     )
@@ -256,8 +262,8 @@ pub async fn deposit(db: &Db, user_id: i64, cents: Cents) -> Result<bool, sqlx::
 /// so concurrent withdrawals can't overdraw the account.
 pub async fn withdraw(db: &Db, user_id: i64, cents: Cents) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(
-        "INSERT INTO transactions (user_id, amount_cents, created_at)
-         SELECT ?1, -?2, ?3
+        "INSERT INTO transactions (user_id, amount_cents, created_at, kind)
+         SELECT ?1, -?2, ?3, 'withdrawal'
          WHERE (SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ?1) >= ?2",
     )
     .bind(user_id)
@@ -266,6 +272,65 @@ pub async fn withdraw(db: &Db, user_id: i64, cents: Cents) -> Result<bool, sqlx:
     .execute(db)
     .await?;
     Ok(result.rows_affected() == 1)
+}
+
+/// Why a transfer didn't happen.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TransferError {
+    InsufficientFunds,
+    RecipientLimit,
+}
+
+/// Move `cents` (> 0) from `from` to `to` (different users) atomically.
+///
+/// Runs in a `BEGIN IMMEDIATE` transaction, so it takes SQLite's write lock
+/// up front: the sender's balance check, the debit and the credit happen as
+/// one unit, and concurrent transfers/withdrawals can't overdraw. Either both
+/// rows are written or neither.
+pub async fn transfer(
+    db: &Db,
+    from: i64,
+    to: i64,
+    cents: Cents,
+) -> Result<Result<(), TransferError>, sqlx::Error> {
+    let mut tx = db.begin_with("BEGIN IMMEDIATE").await?;
+    let now = now_millis();
+    let debited = sqlx::query(
+        "INSERT INTO transactions (user_id, amount_cents, created_at, kind, counterparty_id)
+         SELECT ?1, -?2, ?3, 'transfer_out', ?4
+         WHERE (SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ?1) >= ?2",
+    )
+    .bind(from)
+    .bind(cents)
+    .bind(now)
+    .bind(to)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if debited != 1 {
+        tx.rollback().await?;
+        return Ok(Err(TransferError::InsufficientFunds));
+    }
+    let credited = sqlx::query(
+        "INSERT INTO transactions (user_id, amount_cents, created_at, kind, counterparty_id)
+         SELECT ?1, ?2, ?3, 'transfer_in', ?4
+         WHERE (SELECT COALESCE(SUM(amount_cents), 0) FROM transactions WHERE user_id = ?1)
+               <= ?5 - ?2",
+    )
+    .bind(to)
+    .bind(cents)
+    .bind(now)
+    .bind(from)
+    .bind(Cents::MAX)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if credited != 1 {
+        tx.rollback().await?;
+        return Ok(Err(TransferError::RecipientLimit));
+    }
+    tx.commit().await?;
+    Ok(Ok(()))
 }
 
 /// Record a failed login. After `threshold` consecutive failures the account

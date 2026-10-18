@@ -293,8 +293,11 @@ fn withdraw_validation_and_overdraft() {
         .unwrap();
     let txs = info["transactions"].as_array().unwrap();
     assert_eq!(txs.len(), 2);
-    assert_eq!(txs[0][1], "-10.10", "newest first");
-    assert_eq!(txs[1][1], "10.10");
+    assert_eq!(txs[0]["amount"], "-10.10", "newest first");
+    assert_eq!(txs[0]["kind"], "withdrawal");
+    assert_eq!(txs[1]["amount"], "10.10");
+    assert_eq!(txs[1]["kind"], "deposit");
+    assert!(txs[1]["counterparty"].is_null());
 }
 
 #[test]
@@ -1263,4 +1266,261 @@ fn allowed_origins_config_overrides_host_matching() {
         "scheme matters"
     );
     assert_eq!(deposit("http://internal:8000"), Status::Forbidden);
+}
+
+/// Logged-in clients for each `(user, password)` over one shared file DB.
+fn clients_for(users: &[(&str, &str)]) -> (Vec<Client>, TempDir) {
+    let (url, dir) = file_db(users);
+    let clients = users
+        .iter()
+        .map(|(user, password)| {
+            let client = Client::tracked(super::build(figment(&url))).unwrap();
+            assert_eq!(
+                location(&login(&client, user, password)).as_deref(),
+                Some("/user_banking")
+            );
+            client
+        })
+        .collect();
+    (clients, dir)
+}
+
+fn transactions_of(client: &Client) -> Vec<Value> {
+    let info: Value = client
+        .get("/json/account_info")
+        .dispatch()
+        .into_json()
+        .unwrap();
+    info["transactions"].as_array().unwrap().clone()
+}
+
+#[test]
+fn transfer_moves_money_and_records_both_sides() {
+    let (clients, _dir) = clients_for(&[("alice", "sunny-river-42"), ("bob", "quiet-forest-17")]);
+    let (alice, bob) = (&clients[0], &clients[1]);
+    assert_eq!(
+        post_json(alice, "/json/deposit", r#"{"amount": 10}"#).0,
+        Status::Ok
+    );
+
+    // Recipient lookup is case-insensitive.
+    let (status, json) = post_json(alice, "/json/transfer", r#"{"to": "BOB", "amount": 4.25}"#);
+    assert_eq!(status, Status::Ok, "{json}");
+    assert_eq!(json["success"], true);
+    assert_eq!(balance(alice), "5.75");
+    assert_eq!(balance(bob), "4.25");
+
+    let sent = &transactions_of(alice)[0];
+    assert_eq!(sent["kind"], "transfer_out");
+    assert_eq!(sent["amount"], "-4.25");
+    assert_eq!(sent["counterparty"], "bob");
+    let received = &transactions_of(bob)[0];
+    assert_eq!(received["kind"], "transfer_in");
+    assert_eq!(received["amount"], "4.25");
+    assert_eq!(received["counterparty"], "alice");
+}
+
+#[test]
+fn transfer_validation() {
+    let (clients, _dir) = clients_for(&[("alice", "sunny-river-42"), ("bob", "quiet-forest-17")]);
+    let alice = &clients[0];
+    assert_eq!(
+        post_json(alice, "/json/deposit", r#"{"amount": 10}"#).0,
+        Status::Ok
+    );
+    for (body, message) in [
+        (r#"{"to": "bob", "amount": 10.01}"#, "Insufficient funds"),
+        (r#"{"to": "alice", "amount": 1}"#, "yourself"),
+        (r#"{"to": "ALICE", "amount": 1}"#, "yourself"),
+        (r#"{"to": "nobody", "amount": 1}"#, "No such recipient"),
+        (r#"{"to": "  ", "amount": 1}"#, "Choose who"),
+        (r#"{"to": "bob", "amount": 0}"#, "greater than"),
+        (r#"{"to": "bob", "amount": -3}"#, "greater than"),
+        (r#"{"to": "bob", "amount": 0.001}"#, "two decimal places"),
+    ] {
+        let (status, json) = post_json(alice, "/json/transfer", body);
+        assert_eq!(status, Status::UnprocessableEntity, "{body}");
+        assert!(
+            json["message"].as_str().unwrap().contains(message),
+            "{body}: {json}"
+        );
+    }
+    for body in [r#"{"amount": 1}"#, r#"{"to": "bob"}"#, "nope"] {
+        assert_eq!(
+            post_json(alice, "/json/transfer", body).0,
+            Status::BadRequest,
+            "{body}"
+        );
+    }
+    assert_eq!(balance(alice), "10.00");
+    assert_eq!(balance(&clients[1]), "0.00");
+}
+
+#[test]
+fn transfer_requires_login_and_csrf() {
+    let (clients, _dir) = clients_for(&[("alice", "sunny-river-42"), ("bob", "quiet-forest-17")]);
+    let alice = &clients[0];
+    post_json(alice, "/json/deposit", r#"{"amount": 10}"#);
+    let response = alice
+        .post("/json/transfer")
+        .header(ContentType::JSON)
+        .body(r#"{"to": "bob", "amount": 1}"#)
+        .dispatch();
+    assert_eq!(response.status(), Status::Forbidden, "no CSRF header");
+    let anonymous = Client::untracked(super::build(figment("sqlite::memory:"))).unwrap();
+    let response = anonymous
+        .post("/json/transfer")
+        .header(ContentType::JSON)
+        .body(r#"{"to": "bob", "amount": 1}"#)
+        .dispatch();
+    assert_eq!(response.status(), Status::Unauthorized);
+    assert_eq!(balance(alice), "10.00");
+}
+
+#[test]
+fn failed_credit_rolls_back_the_debit() {
+    // Bob is (artificially) at the maximum representable balance, so the
+    // credit half of the transfer fails; Alice must not be debited.
+    let (url, _dir) = file_db(&[("alice", "sunny-river-42"), ("bob", "quiet-forest-17")]);
+    let runtime = rocket::tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let pool = db::connect(&url).await.unwrap();
+        let bob = db::find_user(&pool, "bob").await.unwrap().unwrap();
+        sqlx::query(
+            "INSERT INTO transactions (user_id, amount_cents, created_at) VALUES (?, ?, 0)",
+        )
+        .bind(bob.id)
+        .bind(i64::MAX - 100)
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+    });
+    let alice = Client::tracked(super::build(figment(&url))).unwrap();
+    login(&alice, "alice", "sunny-river-42");
+    post_json(&alice, "/json/deposit", r#"{"amount": 10}"#);
+    let (status, json) = post_json(&alice, "/json/transfer", r#"{"to": "bob", "amount": 5}"#);
+    assert_eq!(status, Status::UnprocessableEntity);
+    assert!(json["message"].as_str().unwrap().contains("can't receive"));
+    assert_eq!(balance(&alice), "10.00");
+    assert_eq!(transactions_of(&alice).len(), 1, "no half-written transfer");
+}
+
+/// Async-client version of [`post_json`], returning just the status.
+async fn post_json_async(
+    client: &rocket::local::asynchronous::Client,
+    path: &'static str,
+    body: &'static str,
+) -> Status {
+    let token = client
+        .cookies()
+        .get_private(CSRF_COOKIE)
+        .unwrap()
+        .value()
+        .to_owned();
+    client
+        .post(path)
+        .header(ContentType::JSON)
+        .header(rocket::http::Header::new(CSRF_HEADER, token))
+        .body(body)
+        .dispatch()
+        .await
+        .status()
+}
+
+#[rocket::async_test]
+async fn concurrent_transfers_conserve_money_and_never_overdraw() {
+    use rocket::local::asynchronous::Client as AsyncClient;
+
+    let (url, _dir) = rocket::tokio::task::spawn_blocking(|| {
+        file_db(&[("alice", "sunny-river-42"), ("bob", "quiet-forest-17")])
+    })
+    .await
+    .unwrap();
+    let alice = AsyncClient::tracked(super::build(figment(&url)))
+        .await
+        .unwrap();
+    let bob = AsyncClient::tracked(super::build(figment(&url)))
+        .await
+        .unwrap();
+    for (client, user, password) in [
+        (&alice, "alice", "sunny-river-42"),
+        (&bob, "bob", "quiet-forest-17"),
+    ] {
+        client.get("/json/csrf").dispatch().await;
+        let token = client
+            .cookies()
+            .get_private(CSRF_COOKIE)
+            .unwrap()
+            .value()
+            .to_owned();
+        client
+            .post("/login")
+            .header(ContentType::Form)
+            .body(format!(
+                "username={user}&password={password}&csrf_token={token}"
+            ))
+            .dispatch()
+            .await;
+    }
+    assert_eq!(
+        post_json_async(&alice, "/json/deposit", r#"{"amount": 10}"#).await,
+        Status::Ok
+    );
+    assert_eq!(
+        post_json_async(&bob, "/json/deposit", r#"{"amount": 10}"#).await,
+        Status::Ok
+    );
+
+    // 30 $1 transfers each way plus 10 $1 withdrawals each, all at once.
+    let mut requests = Vec::new();
+    for _ in 0..30 {
+        requests.push(post_json_async(
+            &alice,
+            "/json/transfer",
+            r#"{"to": "bob", "amount": 1}"#,
+        ));
+        requests.push(post_json_async(
+            &bob,
+            "/json/transfer",
+            r#"{"to": "alice", "amount": 1}"#,
+        ));
+    }
+    for _ in 0..10 {
+        requests.push(post_json_async(
+            &alice,
+            "/json/withdraw",
+            r#"{"amount": 1}"#,
+        ));
+        requests.push(post_json_async(&bob, "/json/withdraw", r#"{"amount": 1}"#));
+    }
+    let statuses = rocket::futures::future::join_all(requests).await;
+    assert!(
+        statuses
+            .iter()
+            .all(|s| *s == Status::Ok || *s == Status::UnprocessableEntity),
+        "{statuses:?}"
+    );
+
+    let mut total = 0i64;
+    for client in [&alice, &bob] {
+        let info: Value = client
+            .get("/json/account_info")
+            .dispatch()
+            .await
+            .into_json()
+            .await
+            .unwrap();
+        let cents: i64 = info["balance"]
+            .as_str()
+            .unwrap()
+            .replace('.', "")
+            .parse()
+            .unwrap();
+        assert!(cents >= 0, "never overdrawn: {info}");
+        total += cents;
+    }
+    let withdrawals_ok = statuses[60..].iter().filter(|s| **s == Status::Ok).count();
+    let withdrawn = i64::try_from(withdrawals_ok).unwrap() * 100;
+    assert_eq!(total + withdrawn, 2000, "money is conserved");
 }

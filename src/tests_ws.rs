@@ -291,3 +291,42 @@ async fn cross_origin_websocket_upgrades_are_refused() {
     assert!(dave.websocket_from(Some(&own)).await.is_some());
     shutdown.notify();
 }
+
+#[rocket::async_test]
+async fn transfers_notify_both_parties_only() {
+    let (port, shutdown) = launch().await;
+    let mut erin = register_and_login(port, "erin", "sunny-river-42").await;
+    let frank = register_and_login(port, "frank", "quiet-forest-17").await;
+    let grace = register_and_login(port, "grace", "calm-meadow-88").await;
+    let mut erin_ws = erin.websocket().await.unwrap();
+    let mut frank_ws = frank.websocket().await.unwrap();
+    let mut grace_ws = grace.websocket().await.unwrap();
+
+    assert_eq!(
+        erin.json("/json/deposit", r#"{"amount": 20}"#).await.status,
+        200
+    );
+    next_text(&mut erin_ws, Duration::from_secs(3)).await;
+    let response = erin
+        .json("/json/transfer", r#"{"to": "frank", "amount": 7.5}"#)
+        .await;
+    assert_eq!(response.status, 200, "{}", response.body);
+    assert_eq!(
+        next_text(&mut erin_ws, Duration::from_secs(3))
+            .await
+            .as_deref(),
+        Some("Sent 💵7.50 to frank")
+    );
+    assert_eq!(
+        next_text(&mut frank_ws, Duration::from_secs(3))
+            .await
+            .as_deref(),
+        Some("Received 💵7.50 from erin")
+    );
+    assert_eq!(
+        next_text(&mut grace_ws, Duration::from_millis(300)).await,
+        None,
+        "uninvolved users see nothing"
+    );
+    shutdown.notify();
+}
