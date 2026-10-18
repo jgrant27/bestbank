@@ -70,13 +70,13 @@
 
       function transaction(type) {
           document.getElementById(type).disabled = true;
-          var amount = document.getElementById("transaction_amount").value;
+          var amount = parseFloat(document.getElementById("transaction_amount").value);
           fetch("/json/" + type,
                 { method: "POST",
                   headers: {
                       'Content-Type': 'application/json',
                   },
-                  body: "{\"amount\": " + amount + "}"
+                  body: JSON.stringify({ amount: amount })
                 })
               .then(function(res){ return res.json(); })
               .then(function(data){

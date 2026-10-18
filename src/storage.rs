@@ -3,9 +3,12 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use chrono::prelude::*;
 
+use crate::money::Cents;
+
+// Temporary in-memory storage. Amounts are integer cents.
 // Temporary storage for credentials and transaction history
 pub type Credentials = HashMap<String, String>;
-pub type TransactionHistory = HashMap<String, Vec<(DateTime<Utc>, f64)>>;
+pub type TransactionHistory = HashMap<String, Vec<(DateTime<Utc>, Cents)>>;
 
 #[derive(Debug)]
 pub struct Storage {

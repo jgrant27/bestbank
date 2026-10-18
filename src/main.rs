@@ -14,6 +14,7 @@ mod tests;
 mod banking;
 mod hashing;
 mod login;
+mod money;
 mod storage;
 
 use banking::*;
