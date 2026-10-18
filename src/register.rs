@@ -8,6 +8,7 @@ use rocket::request::FlashMessage;
 use rocket::response::{Flash, Redirect};
 use rocket_dyn_templates::Template;
 
+use crate::csrf::{CsrfForm, CsrfToken};
 use crate::db::{self, AppConfig, Db};
 use crate::login::User;
 use crate::ratelimit::RegisterAttempt;
@@ -41,6 +42,9 @@ pub struct Registration {
     pub username: String,
     pub password: String,
     pub confirm: String,
+    /// Missing -> empty, which fails verification (not a 422).
+    #[field(default = String::new())]
+    pub csrf_token: String,
 }
 
 /// Check a username: 3–32 characters from `[A-Za-z0-9_.-]`.
@@ -103,10 +107,12 @@ pub fn register_logged_in(_user: User) -> Redirect {
 #[get("/register", rank = 1)]
 pub fn register_page(
     config: &State<AppConfig>,
+    csrf: CsrfToken,
     flash: Option<FlashMessage<'_>>,
 ) -> Option<Template> {
     registration_enabled(config)?;
     let mut context: HashMap<&str, &str> = HashMap::new();
+    context.insert("csrf_token", &csrf.0);
     if let Some(ref flash) = flash {
         context.insert("flash", flash.message());
         context.insert("flash_kind", flash.kind());
@@ -119,10 +125,15 @@ pub async fn register(
     db: &State<Db>,
     config: &State<AppConfig>,
     _attempt: RegisterAttempt,
+    csrf: CsrfForm,
     form: Form<Registration>,
     request_id: RequestId,
 ) -> Option<Flash<Redirect>> {
     registration_enabled(config)?;
+    if !csrf.verify(&form.csrf_token) {
+        tracing::warn!(request_id = %request_id.0, "registration rejected: bad CSRF token");
+        return Some(error("This form has expired. Please try again."));
+    }
     if let Err(message) = validate(&form) {
         return Some(error(message));
     }

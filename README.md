@@ -89,15 +89,18 @@ Set `allow_registration = false` in `Rocket.toml` (or
 | POST   | `/register`          | –     | Form: `username`, `password`, `confirm`   |
 | GET    | `/user_banking`      | user  | Banking page (redirects to login if not)  |
 | GET    | `/json/account_info` | user  | Balance and history, newest first         |
-| POST   | `/json/deposit`      | user  | JSON `{"amount": 12.34}`                  |
-| POST   | `/json/withdraw`     | user  | JSON `{"amount": 12.34}`                  |
+| POST   | `/json/deposit`      | user  | JSON `{"amount": 12.34}` + `X-CSRF-Token` |
+| POST   | `/json/withdraw`     | user  | JSON `{"amount": 12.34}` + `X-CSRF-Token` |
 | GET    | `/ws`                | user  | WebSocket: your own transaction events    |
+| GET    | `/json/csrf`         | –     | Current CSRF token (for API clients)      |
 | GET    | `/dump`              | admin | Users, balances, transaction counts (JSON) |
 | GET    | `/static/*`          | –     | Static files (favicon)                    |
 
 Amounts must be positive, have at most two decimal places and be at most
 1,000,000.00 per transaction; withdrawals can't overdraw. Invalid requests get
-a 4xx status with `{"success": false, "message": "..."}`. Unauthenticated API
+a 4xx status with `{"success": false, "message": "..."}` (403 for a missing
+or wrong CSRF token or a cross-origin request). All form POSTs need the
+`csrf_token` field. Unauthenticated API
 requests get `401`.
 
 ### Logging
@@ -133,8 +136,14 @@ What the demo does:
   session of the user, and open websockets close within
   `session_check_secs` once their session ends.
 - Passwords are stored as salted Argon2id PHC strings.
-- `SameSite=Strict` on the session cookie is the CSRF defence for the POST
-  routes.
+- CSRF: every form carries a per-browser token (from an encrypted,
+  `HttpOnly`, `SameSite=Strict` `csrf` cookie, rotated on login and logout)
+  and the JSON API requires it in an `X-CSRF-Token` header (the page reads it
+  from `<meta name="csrf-token">`; API clients can `GET /json/csrf`). The
+  login form is covered too, so login CSRF is blocked. POSTs and the
+  websocket upgrade are also rejected when `Origin`/`Referer` names another
+  origin. Behind a proxy that rewrites `Host`, list the public origin(s) in
+  `allowed_origins`.
 - WebSocket connections require a logged-in session and only receive that
   user's events.
 
@@ -156,4 +165,3 @@ What it doesn't do (fine for a demo, not for production):
 - The "account locked" message reveals that a username exists (a deliberate
   UX trade-off, mitigated by the per-IP rate limit). Lockout can also be
   abused to lock someone out for `lockout_secs`.
-- No CSRF tokens (relies on `SameSite`); login CSRF is not prevented.

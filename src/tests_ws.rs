@@ -15,6 +15,7 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 struct Browser {
     port: u16,
     cookies: HashMap<String, String>,
+    extra_header: Option<String>,
 }
 
 struct HttpResponse {
@@ -27,6 +28,7 @@ impl Browser {
         Self {
             port,
             cookies: HashMap::new(),
+            extra_header: None,
         }
     }
 
@@ -48,10 +50,15 @@ impl Browser {
         let mut stream = TcpStream::connect(("127.0.0.1", self.port)).await.unwrap();
         let request = format!(
             "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\
-             Cookie: {cookies}\r\nContent-Type: {content_type}\r\nContent-Length: {len}\r\n\r\n{body}",
+             Cookie: {cookies}\r\nContent-Type: {content_type}\r\nContent-Length: {len}\r\n{extra}\r\n{body}",
             port = self.port,
             cookies = self.cookie_header(),
             len = body.len(),
+            extra = self
+                .extra_header
+                .as_ref()
+                .map(|h| format!("{h}\r\n"))
+                .unwrap_or_default(),
         );
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut raw = Vec::new();
@@ -86,17 +93,35 @@ impl Browser {
         }
     }
 
+    /// Current CSRF token (it rotates on login/logout, so fetch each time).
+    async fn csrf(&mut self) -> String {
+        let response = self.request("GET", "/json/csrf", "", "").await;
+        let start = response.body.find(r#""csrf_token":""#).expect("csrf json") + 14;
+        response.body[start..start + 64].to_owned()
+    }
+
     async fn form(&mut self, path: &str, body: &str) -> HttpResponse {
-        self.request("POST", path, "application/x-www-form-urlencoded", body)
+        let token = self.csrf().await;
+        let sep = if body.is_empty() { "" } else { "&" };
+        let body = format!("{body}{sep}csrf_token={token}");
+        self.request("POST", path, "application/x-www-form-urlencoded", &body)
             .await
     }
 
     async fn json(&mut self, path: &str, body: &str) -> HttpResponse {
-        self.request("POST", path, "application/json", body).await
+        self.extra_header = Some(format!("X-CSRF-Token: {}", self.csrf().await));
+        let response = self.request("POST", path, "application/json", body).await;
+        self.extra_header = None;
+        response
     }
 
     /// Open `/ws` with this browser's cookies; `None` if the upgrade fails.
     async fn websocket(&self) -> Option<Ws> {
+        self.websocket_from(None).await
+    }
+
+    /// Like [`Browser::websocket`], sending the given `Origin` header.
+    async fn websocket_from(&self, origin: Option<&str>) -> Option<Ws> {
         let mut request = format!("ws://127.0.0.1:{}/ws", self.port)
             .into_client_request()
             .unwrap();
@@ -104,6 +129,11 @@ impl Browser {
             "Cookie",
             HeaderValue::from_str(&self.cookie_header()).unwrap(),
         );
+        if let Some(origin) = origin {
+            request
+                .headers_mut()
+                .insert("Origin", HeaderValue::from_str(origin).unwrap());
+        }
         let stream = TcpStream::connect(("127.0.0.1", self.port)).await.unwrap();
         tokio_tungstenite::client_async(request, stream)
             .await
@@ -244,5 +274,20 @@ async fn open_websocket_is_closed_when_sessions_are_revoked() {
     assert!(closed, "websocket should close after revocation");
     assert!(phone.websocket().await.is_none(), "and can't reconnect");
 
+    shutdown.notify();
+}
+
+#[rocket::async_test]
+async fn cross_origin_websocket_upgrades_are_refused() {
+    let (port, shutdown) = launch().await;
+    let dave = register_and_login(port, "dave", "sunny-river-42").await;
+    assert!(
+        dave.websocket_from(Some("https://evil.example"))
+            .await
+            .is_none(),
+        "cross-site websocket hijacking blocked"
+    );
+    let own = format!("http://127.0.0.1:{port}");
+    assert!(dave.websocket_from(Some(&own)).await.is_some());
     shutdown.notify();
 }

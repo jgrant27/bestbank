@@ -13,6 +13,7 @@ use rocket::tokio::sync::broadcast::{self, error::RecvError};
 use rocket::tokio::time::interval;
 use rocket_ws::{Channel, Message, WebSocket};
 
+use crate::csrf::SameOrigin;
 use crate::db::{AppConfig, Db};
 use crate::login::User;
 use crate::sessions;
@@ -54,6 +55,7 @@ impl Events {
 #[get("/ws")]
 pub fn ws(
     ws: WebSocket,
+    _origin: SameOrigin,
     user: User,
     events: &State<Events>,
     db: &State<Db>,

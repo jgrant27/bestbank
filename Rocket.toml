@@ -26,6 +26,10 @@ lockout_secs = 900
 # Use the TCP peer address as the client IP. Don't trust X-Real-IP unless the
 # app runs behind a reverse proxy that sets it (then: ip_header = "X-Real-IP").
 ip_header = false
+# Origins allowed to POST (CSRF Origin/Referer check). Empty = must match the
+# request's Host header. Set when a proxy rewrites Host, e.g.
+#   allowed_origins = ["https://bank.example"]
+allowed_origins = []
 
 [debug]
 port = 8080

@@ -21,6 +21,7 @@
     {{/if}}
 
     <form action="/login" method="post" accept-charset="utf-8">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
       <label for="username">username</label>
       <input type="text" name="username" id="username" value="" />
       <label for="password">password</label>

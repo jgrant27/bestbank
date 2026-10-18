@@ -11,6 +11,7 @@ mod tests;
 mod tests_ws;
 
 mod banking;
+mod csrf;
 mod db;
 mod events;
 mod hashing;
@@ -83,6 +84,7 @@ fn build(figment: Figment) -> Rocket<Build> {
                 banking::withdraw,
                 banking::deposit,
                 events::ws,
+                csrf::token,
                 dump,
             ],
         )

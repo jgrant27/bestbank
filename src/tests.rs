@@ -4,6 +4,7 @@ use rocket::local::blocking::{Client, LocalResponse};
 use rocket::serde::json::Value;
 use tempfile::TempDir;
 
+use crate::csrf::{CSRF_COOKIE, CSRF_HEADER};
 use crate::db;
 use crate::hashing::hash_password;
 use crate::login::SESSION_COOKIE;
@@ -43,12 +44,32 @@ fn client_with_users(users: &[(&str, &str)]) -> (Client, TempDir) {
     (client, dir)
 }
 
-fn login<'c>(client: &'c Client, user: &str, password: &str) -> LocalResponse<'c> {
+/// The client's current CSRF token (fetching one if it has none yet).
+fn csrf(client: &Client) -> String {
+    if let Some(cookie) = client.cookies().get_private(CSRF_COOKIE) {
+        return cookie.value().to_owned();
+    }
+    let json: Value = client.get("/json/csrf").dispatch().into_json().unwrap();
+    json["csrf_token"].as_str().unwrap().to_owned()
+}
+
+/// POST a form, adding the client's CSRF token.
+fn post_form<'c>(client: &'c Client, path: &str, body: &str) -> LocalResponse<'c> {
+    let token = csrf(client);
+    let sep = if body.is_empty() { "" } else { "&" };
     client
-        .post("/login")
+        .post(path.to_owned())
         .header(ContentType::Form)
-        .body(format!("username={user}&password={password}"))
+        .body(format!("{body}{sep}csrf_token={token}"))
         .dispatch()
+}
+
+fn login<'c>(client: &'c Client, user: &str, password: &str) -> LocalResponse<'c> {
+    post_form(
+        client,
+        "/login",
+        &format!("username={user}&password={password}"),
+    )
 }
 
 fn location(response: &LocalResponse<'_>) -> Option<String> {
@@ -56,9 +77,11 @@ fn location(response: &LocalResponse<'_>) -> Option<String> {
 }
 
 fn post_json(client: &Client, path: &str, body: &str) -> (Status, Value) {
+    let token = csrf(client);
     let response = client
         .post(path.to_owned())
         .header(ContentType::JSON)
+        .header(rocket::http::Header::new(CSRF_HEADER, token))
         .body(body)
         .dispatch();
     let status = response.status();
@@ -147,7 +170,7 @@ fn good_login_works_and_logout_ends_session() {
     // /dump works for admin.
     assert_eq!(client.get("/dump").dispatch().status(), Status::Ok);
 
-    let response = client.post("/logout").dispatch();
+    let response = post_form(&client, "/logout", "");
     assert_eq!(response.status(), Status::SeeOther);
     let page = client.get("/login").dispatch().into_string().unwrap();
     assert!(page.contains("Successfully logged out."));
@@ -455,15 +478,28 @@ async fn concurrent_withdrawals_cannot_overdraw() {
     let client = AsyncClient::tracked(super::build(figment(&url)))
         .await
         .unwrap();
+    let token = |client: &AsyncClient| {
+        client
+            .cookies()
+            .get_private(CSRF_COOKIE)
+            .map(|c| c.value().to_owned())
+            .unwrap_or_default()
+    };
+    client.get("/json/csrf").dispatch().await;
     client
         .post("/login")
         .header(ContentType::Form)
-        .body("username=admin&password=admin")
+        .body(format!(
+            "username=admin&password=admin&csrf_token={}",
+            token(&client)
+        ))
         .dispatch()
         .await;
+    let csrf_header = || rocket::http::Header::new(CSRF_HEADER, token(&client));
     let response = client
         .post("/json/deposit")
         .header(ContentType::JSON)
+        .header(csrf_header())
         .body(r#"{"amount": 10}"#)
         .dispatch()
         .await;
@@ -474,6 +510,7 @@ async fn concurrent_withdrawals_cannot_overdraw() {
         client
             .post("/json/withdraw")
             .header(ContentType::JSON)
+            .header(csrf_header())
             .body(r#"{"amount": 1}"#)
             .dispatch()
             .await
@@ -507,13 +544,11 @@ fn register<'c>(
     password: &str,
     confirm: &str,
 ) -> LocalResponse<'c> {
-    client
-        .post("/register")
-        .header(ContentType::Form)
-        .body(format!(
-            "username={user}&password={password}&confirm={confirm}"
-        ))
-        .dispatch()
+    post_form(
+        client,
+        "/register",
+        &format!("username={user}&password={password}&confirm={confirm}"),
+    )
 }
 
 #[test]
@@ -702,7 +737,7 @@ fn session_is_rotated_on_login() {
 fn logout_revokes_the_session_server_side() {
     let client = client();
     let token = login_token(&client, "admin", "admin");
-    client.post("/logout").dispatch();
+    post_form(&client, "/logout", "");
     // Replaying the captured cookie after logout no longer works.
     assert_eq!(status_with_token(&client, &token), Status::Unauthorized);
 }
@@ -722,7 +757,7 @@ fn logout_everywhere_revokes_all_of_a_users_sessions() {
     );
     assert_eq!(session_count(&laptop), 3);
 
-    let response = laptop.post("/logout_all").dispatch();
+    let response = post_form(&laptop, "/logout_all", "");
     assert_eq!(location(&response).as_deref(), Some("/login"));
     let page = laptop.get("/login").dispatch().into_string().unwrap();
     assert!(page.contains("Logged out of all sessions."));
@@ -744,7 +779,7 @@ fn logout_everywhere_revokes_all_of_a_users_sessions() {
 
     // Without a session it's a harmless redirect.
     let anonymous = Client::tracked(super::build(figment(&url))).unwrap();
-    let response = anonymous.post("/logout_all").dispatch();
+    let response = post_form(&anonymous, "/logout_all", "");
     assert_eq!(location(&response).as_deref(), Some("/login"));
 }
 
@@ -812,11 +847,14 @@ fn logged_in_users_visiting_login_go_to_their_account() {
 }
 
 fn login_from<'c>(client: &'c Client, ip: &str, user: &str, password: &str) -> LocalResponse<'c> {
+    let token = csrf(client);
     client
         .post("/login")
         .remote(format!("{ip}:40000").parse().unwrap())
         .header(ContentType::Form)
-        .body(format!("username={user}&password={password}"))
+        .body(format!(
+            "username={user}&password={password}&csrf_token={token}"
+        ))
         .dispatch()
 }
 
@@ -854,7 +892,10 @@ fn login_attempts_are_rate_limited_per_ip() {
         .remote("10.0.0.1:40000".parse().unwrap())
         .header(rocket::http::Header::new("X-Real-IP", "192.0.2.99"))
         .header(ContentType::Form)
-        .body("username=admin&password=admin")
+        .body(format!(
+            "username=admin&password=admin&csrf_token={}",
+            csrf(&client)
+        ))
         .dispatch();
     assert_eq!(response.status(), Status::TooManyRequests);
 
@@ -982,4 +1023,244 @@ fn unknown_users_take_as_long_as_wrong_passwords() {
         unknown * 3 > known,
         "unknown {unknown:?} vs known {known:?}: should be comparable"
     );
+}
+
+fn header(name: &'static str, value: &str) -> rocket::http::Header<'static> {
+    rocket::http::Header::new(name, value.to_owned())
+}
+
+#[test]
+fn pages_embed_the_csrf_token() {
+    let client = client();
+    let token = csrf(&client);
+    assert_eq!(token.len(), 64);
+    let hidden = format!(r#"name="csrf_token" value="{token}""#);
+    assert!(
+        client
+            .get("/login")
+            .dispatch()
+            .into_string()
+            .unwrap()
+            .contains(&hidden)
+    );
+    assert!(
+        client
+            .get("/register")
+            .dispatch()
+            .into_string()
+            .unwrap()
+            .contains(&hidden)
+    );
+    login(&client, "admin", "admin");
+    let token = csrf(&client);
+    let page = client
+        .get("/user_banking")
+        .dispatch()
+        .into_string()
+        .unwrap();
+    assert!(page.contains(&format!(r#"<meta name="csrf-token" content="{token}""#)));
+    assert!(page.contains(&format!(r#"name="csrf_token" value="{token}""#)));
+}
+
+#[test]
+fn login_without_a_valid_token_is_rejected() {
+    let client = client();
+    csrf(&client);
+    for body in [
+        "username=admin&password=admin".to_owned(),
+        "username=admin&password=admin&csrf_token=".to_owned(),
+        format!(
+            "username=admin&password=admin&csrf_token={}",
+            "0".repeat(64)
+        ),
+    ] {
+        let response = client
+            .post("/login")
+            .header(ContentType::Form)
+            .body(&body)
+            .dispatch();
+        assert_eq!(location(&response).as_deref(), Some("/login"), "{body}");
+        let page = client.get("/login").dispatch().into_string().unwrap();
+        assert!(page.contains("This form has expired"), "{body}");
+    }
+    assert_eq!(
+        client.get("/json/account_info").dispatch().status(),
+        Status::Unauthorized
+    );
+    // A fresh browser with no CSRF cookie at all is rejected too.
+    let fresh = Client::tracked(super::build(figment("sqlite::memory:"))).unwrap();
+    let response = fresh
+        .post("/login")
+        .header(ContentType::Form)
+        .body(format!(
+            "username=admin&password=admin&csrf_token={}",
+            "a".repeat(64)
+        ))
+        .dispatch();
+    assert_eq!(location(&response).as_deref(), Some("/login"));
+}
+
+#[test]
+fn json_api_requires_the_csrf_header() {
+    let client = client();
+    login(&client, "admin", "admin");
+    for token in [None, Some(String::new()), Some("f".repeat(64))] {
+        let mut request = client
+            .post("/json/deposit")
+            .header(ContentType::JSON)
+            .body(r#"{"amount": 5}"#);
+        if let Some(token) = token {
+            request = request.header(header(CSRF_HEADER, &token));
+        }
+        let response = request.dispatch();
+        assert_eq!(response.status(), Status::Forbidden);
+        let json: Value = response.into_json().unwrap();
+        assert_eq!(json["success"], false);
+        assert!(json["message"].as_str().unwrap().contains("CSRF"));
+    }
+    assert_eq!(balance(&client), "0.00");
+    assert_eq!(
+        post_json(&client, "/json/deposit", r#"{"amount": 5}"#).0,
+        Status::Ok
+    );
+}
+
+#[test]
+fn logout_buttons_require_the_token() {
+    let client = client();
+    login(&client, "admin", "admin");
+    for path in ["/logout", "/logout_all"] {
+        let response = client
+            .post(path)
+            .header(ContentType::Form)
+            .body("csrf_token=nope")
+            .dispatch();
+        assert_eq!(response.status(), Status::Forbidden, "{path}");
+    }
+    // Still logged in.
+    assert_eq!(
+        client.get("/json/account_info").dispatch().status(),
+        Status::Ok
+    );
+}
+
+#[test]
+fn registration_requires_the_token() {
+    let client = client();
+    csrf(&client);
+    let response = client
+        .post("/register")
+        .header(ContentType::Form)
+        .body("username=mallory&password=sunny-river-42&confirm=sunny-river-42")
+        .dispatch();
+    assert_eq!(location(&response).as_deref(), Some("/register"));
+    assert!(
+        client
+            .get("/register")
+            .dispatch()
+            .into_string()
+            .unwrap()
+            .contains("This form has expired")
+    );
+    login(&client, "mallory", "sunny-river-42");
+    assert_eq!(
+        client.get("/json/account_info").dispatch().status(),
+        Status::Unauthorized
+    );
+}
+
+#[test]
+fn csrf_token_rotates_on_login_and_logout() {
+    let client = client();
+    let before = csrf(&client);
+    login(&client, "admin", "admin");
+    let after_login = csrf(&client);
+    assert_ne!(before, after_login);
+    post_form(&client, "/logout", "");
+    assert_ne!(after_login, csrf(&client));
+}
+
+#[test]
+fn cross_origin_posts_are_rejected_even_with_a_token() {
+    let client = client();
+    login(&client, "admin", "admin");
+    let token = csrf(&client);
+    let deposit = |origin: Option<(&'static str, &str)>| {
+        let mut request = client
+            .post("/json/deposit")
+            .header(header("Host", "localhost:8080"))
+            .header(ContentType::JSON)
+            .header(header(CSRF_HEADER, &token))
+            .body(r#"{"amount": 1}"#);
+        if let Some((name, value)) = origin {
+            request = request.header(header(name, value));
+        }
+        request.dispatch().status()
+    };
+    assert_eq!(
+        deposit(Some(("Origin", "https://evil.example"))),
+        Status::Forbidden
+    );
+    assert_eq!(deposit(Some(("Origin", "null"))), Status::Forbidden);
+    assert_eq!(
+        deposit(Some(("Origin", "http://localhost:8080.evil.example"))),
+        Status::Forbidden
+    );
+    assert_eq!(
+        deposit(Some(("Referer", "https://evil.example/page"))),
+        Status::Forbidden
+    );
+    assert_eq!(balance(&client), "0.00");
+    // Same origin (any letter case) and header-less clients are fine.
+    assert_eq!(
+        deposit(Some(("Origin", "http://localhost:8080"))),
+        Status::Ok
+    );
+    assert_eq!(
+        deposit(Some(("Origin", "http://LOCALHOST:8080"))),
+        Status::Ok
+    );
+    assert_eq!(
+        deposit(Some(("Referer", "http://localhost:8080/user_banking"))),
+        Status::Ok
+    );
+    assert_eq!(deposit(None), Status::Ok);
+    assert_eq!(balance(&client), "4.00");
+
+    // Forms are checked too (403 before the token is even looked at).
+    let response = client
+        .post("/logout")
+        .header(header("Host", "localhost:8080"))
+        .header(header("Origin", "https://evil.example"))
+        .header(ContentType::Form)
+        .body(format!("csrf_token={token}"))
+        .dispatch();
+    assert_eq!(response.status(), Status::Forbidden);
+}
+
+#[test]
+fn allowed_origins_config_overrides_host_matching() {
+    let figment = figment("sqlite::memory:")
+        .merge(("allowed_origins", vec!["https://bank.example".to_owned()]));
+    let client = Client::tracked(super::build(figment)).unwrap();
+    login(&client, "admin", "admin");
+    let token = csrf(&client);
+    let deposit = |origin: &str| {
+        client
+            .post("/json/deposit")
+            .header(header("Host", "internal:8000"))
+            .header(header("Origin", origin))
+            .header(ContentType::JSON)
+            .header(header(CSRF_HEADER, &token))
+            .body(r#"{"amount": 1}"#)
+            .dispatch()
+            .status()
+    };
+    assert_eq!(deposit("https://bank.example"), Status::Ok);
+    assert_eq!(
+        deposit("http://bank.example"),
+        Status::Forbidden,
+        "scheme matters"
+    );
+    assert_eq!(deposit("http://internal:8000"), Status::Forbidden);
 }

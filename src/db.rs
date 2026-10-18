@@ -49,6 +49,10 @@ pub struct AppConfig {
     /// How long a locked account stays locked, in seconds.
     #[serde(default = "default_lockout_secs")]
     pub lockout_secs: u64,
+    /// Origins (e.g. `https://bank.example`) allowed to POST. Empty means
+    /// "same host as the request's `Host` header".
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
 }
 
 fn default_rate_limit() -> u32 {

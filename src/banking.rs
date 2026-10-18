@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::csrf::{CsrfError, CsrfHeader, CsrfToken};
 use crate::db::{self, Db};
 use crate::events::Events;
 use crate::login::User;
@@ -24,9 +25,10 @@ pub fn user_banking_login() -> Redirect {
 }
 
 #[get("/user_banking")]
-pub async fn user_banking(db: &State<Db>, user: User) -> Result<Template, Status> {
+pub async fn user_banking(db: &State<Db>, user: User, csrf: CsrfToken) -> Result<Template, Status> {
     let balance = db::balance(db, user.id).await.map_err(|e| db_error(&e))?;
     let mut context = HashMap::new();
+    context.insert("csrf_token", csrf.0);
     context.insert("balance", format_cents(balance));
     context.insert("user_name", user.name);
     Ok(Template::render("banking", &context))
@@ -62,6 +64,14 @@ fn failure(status: Status, message: &str) -> ApiResponse {
     (status, json!({ "success": false, "message": message }))
 }
 
+fn csrf_failure(error: &CsrfError) -> ApiResponse {
+    let message = match error {
+        CsrfError::CrossOrigin => "Cross-origin requests are not allowed.",
+        CsrfError::BadToken => "Missing or invalid CSRF token. Reload the page and try again.",
+    };
+    failure(Status::Forbidden, message)
+}
+
 fn server_error(e: &sqlx::Error) -> ApiResponse {
     failure(db_error(e), "Something went wrong, please try again.")
 }
@@ -82,8 +92,12 @@ pub async fn withdraw(
     db: &State<Db>,
     events: &State<Events>,
     user: User,
+    csrf: Result<CsrfHeader, CsrfError>,
     request_id: RequestId,
 ) -> ApiResponse {
+    if let Err(e) = csrf {
+        return csrf_failure(&e);
+    }
     let cents = match validate(payload) {
         Ok(cents) => cents,
         Err(resp) => return resp,
@@ -107,8 +121,12 @@ pub async fn deposit(
     db: &State<Db>,
     events: &State<Events>,
     user: User,
+    csrf: Result<CsrfHeader, CsrfError>,
     request_id: RequestId,
 ) -> ApiResponse {
+    if let Err(e) = csrf {
+        return csrf_failure(&e);
+    }
     let cents = match validate(payload) {
         Ok(cents) => cents,
         Err(resp) => return resp,

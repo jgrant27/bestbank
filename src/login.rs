@@ -12,6 +12,7 @@ use rocket_dyn_templates::Template;
 use crate::db::{self, AppConfig, Db};
 use crate::telemetry::RequestId;
 
+use crate::csrf::{self, CsrfForm, CsrfToken};
 use crate::ratelimit::LoginAttempt;
 use crate::sessions;
 pub use crate::sessions::SESSION_COOKIE;
@@ -23,6 +24,17 @@ pub const LOCKED_MESSAGE: &str =
 pub struct Login {
     pub username: String,
     pub password: String,
+    /// Missing -> empty, which fails verification (not a 422).
+    #[field(default = String::new())]
+    pub csrf_token: String,
+}
+
+/// Body of forms that carry nothing but the CSRF token (logout buttons).
+#[derive(FromForm)]
+pub struct CsrfOnly {
+    /// Missing -> empty, which fails verification (not a 422).
+    #[field(default = String::new())]
+    pub csrf_token: String,
 }
 
 /// A logged-in user, authenticated via a live server-side session.
@@ -84,6 +96,13 @@ fn session_cookie(token: String, config: &AppConfig) -> Cookie<'static> {
         .build()
 }
 
+fn form_expired() -> Box<Flash<Redirect>> {
+    Box::new(Flash::error(
+        Redirect::to(uri!(login_page)),
+        "This form has expired. Please try again.",
+    ))
+}
+
 fn something_went_wrong() -> Box<Flash<Redirect>> {
     Box::new(Flash::error(
         Redirect::to(uri!(login_page)),
@@ -97,9 +116,14 @@ pub async fn login(
     config: &State<AppConfig>,
     jar: &CookieJar<'_>,
     _attempt: LoginAttempt,
+    csrf: CsrfForm,
     login: Form<Login>,
     request_id: RequestId,
 ) -> Result<Redirect, Box<Flash<Redirect>>> {
+    if !csrf.verify(&login.csrf_token) {
+        tracing::warn!(request_id = %request_id.0, "login rejected: bad CSRF token");
+        return Err(form_expired());
+    }
     let invalid = || {
         Box::new(Flash::error(
             Redirect::to(uri!(login_page)),
@@ -170,6 +194,7 @@ pub async fn login(
             something_went_wrong()
         })?;
     jar.add_private(session_cookie(session.token, config));
+    csrf::rotate(jar);
     // Debug-format user input so control characters can't forge log lines.
     tracing::info!(request_id = %request_id.0, username = ?user.username, "login succeeded");
     Ok(Redirect::to(uri!(crate::banking::user_banking)))
@@ -182,8 +207,13 @@ pub fn login_user(_user: User) -> Redirect {
 }
 
 #[get("/login", rank = 1)]
-pub fn login_page(config: &State<AppConfig>, flash: Option<FlashMessage<'_>>) -> Template {
+pub fn login_page(
+    config: &State<AppConfig>,
+    csrf: CsrfToken,
+    flash: Option<FlashMessage<'_>>,
+) -> Template {
     let mut context: HashMap<&str, &str> = HashMap::new();
+    context.insert("csrf_token", &csrf.0);
     if config.allow_registration {
         context.insert("allow_registration", "true");
     }
@@ -195,8 +225,18 @@ pub fn login_page(config: &State<AppConfig>, flash: Option<FlashMessage<'_>>) ->
 }
 
 /// Log out: delete this browser's server-side session and its cookie.
-#[post("/logout")]
-pub async fn logout(db: &State<Db>, jar: &CookieJar<'_>, request_id: RequestId) -> Flash<Redirect> {
+#[post("/logout", data = "<form>")]
+pub async fn logout(
+    db: &State<Db>,
+    jar: &CookieJar<'_>,
+    csrf: CsrfForm,
+    form: Form<CsrfOnly>,
+    request_id: RequestId,
+) -> Result<Flash<Redirect>, Status> {
+    if !csrf.verify(&form.csrf_token) {
+        tracing::warn!(request_id = %request_id.0, "logout rejected: bad CSRF token");
+        return Err(Status::Forbidden);
+    }
     if let Some(cookie) = jar.get_private(SESSION_COOKIE) {
         match sessions::delete(db, cookie.value()).await {
             Ok(()) => tracing::info!(request_id = %request_id.0, "logout"),
@@ -206,17 +246,27 @@ pub async fn logout(db: &State<Db>, jar: &CookieJar<'_>, request_id: RequestId) 
         }
     }
     jar.remove_private(Cookie::build(SESSION_COOKIE).path("/"));
-    Flash::success(Redirect::to(uri!(login_page)), "Successfully logged out.")
+    csrf::rotate(jar);
+    Ok(Flash::success(
+        Redirect::to(uri!(login_page)),
+        "Successfully logged out.",
+    ))
 }
 
 /// Log out everywhere: revoke every session belonging to this user.
-#[post("/logout_all")]
+#[post("/logout_all", data = "<form>")]
 pub async fn logout_all(
     db: &State<Db>,
     jar: &CookieJar<'_>,
     user: User,
+    csrf: CsrfForm,
+    form: Form<CsrfOnly>,
     request_id: RequestId,
-) -> Flash<Redirect> {
+) -> Result<Flash<Redirect>, Status> {
+    if !csrf.verify(&form.csrf_token) {
+        tracing::warn!(request_id = %request_id.0, "logout_all rejected: bad CSRF token");
+        return Err(Status::Forbidden);
+    }
     match sessions::delete_all_for_user(db, user.id).await {
         Ok(n) => {
             tracing::info!(request_id = %request_id.0, username = ?user.name, sessions = n, "logged out everywhere");
@@ -226,10 +276,11 @@ pub async fn logout_all(
         }
     }
     jar.remove_private(Cookie::build(SESSION_COOKIE).path("/"));
-    Flash::success(
+    csrf::rotate(jar);
+    Ok(Flash::success(
         Redirect::to(uri!(login_page)),
         "Logged out of all sessions.",
-    )
+    ))
 }
 
 /// `POST /logout_all` without a session: nothing to revoke.
