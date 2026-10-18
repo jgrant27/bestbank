@@ -50,7 +50,7 @@ pub fn account_info(state: &State<SharedStorage>, user: User) -> Value {
 
 /// Request body for deposits and withdrawals. `amount` is a decimal number
 /// of dollars (e.g. `12.34`) and is converted to integer cents.
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 pub struct Payload {
     amount: f64,
 }

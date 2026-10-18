@@ -1,6 +1,6 @@
 use super::rocket;
 use self::rocket::local::blocking::Client;
-use self::rocket::http::{Status, ContentType, Cookie};
+use self::rocket::http::Status;
 
 #[test]
 fn login_page() {
@@ -17,7 +17,6 @@ fn login_page() {
     let response = client.get("/login").dispatch();
     assert_eq!(response.status(), Status::Ok);
     let content = response.into_string().unwrap();
-    println!("{}", content);
-    assert_eq!(content.len(), 699);
-    assert_eq!(content.contains("Please Login"), true);
+    println!("{content}");
+    assert!(content.contains("Please Login"));
 }

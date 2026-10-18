@@ -1,12 +1,9 @@
 #![warn(clippy::all, clippy::pedantic)]
+// Rocket request guards (e.g. `User`, `Form<T>`) are taken by value by design.
+#![allow(clippy::needless_pass_by_value)]
 
-#[macro_use]
-extern crate maplit;
 #[macro_use]
 extern crate rocket;
-#[macro_use]
-extern crate serde_derive;
-
 
 #[cfg(test)]
 mod tests;
@@ -18,62 +15,63 @@ mod login;
 mod money;
 mod storage;
 
-use banking::*;
-use hashing::*;
-use storage::*;
-
+use std::collections::HashMap;
 use std::sync::Mutex;
-use rocket::State;
+
+use rocket::fs::{FileServer, relative};
+use rocket::http::Status;
+use rocket::{Build, Rocket, State};
 use rocket_dyn_templates::Template;
 
+use storage::{SharedStorage, Storage};
 
+/// Debug dump of all storage. Admin only.
 #[get("/dump")]
-fn dump(state: &State<Mutex<storage::Storage>>, user: login::User) -> String {
-    if "admin" == user.name {
-        format!("{:?}", *storage::lock(state))
+fn dump(state: &State<SharedStorage>, user: login::User) -> Result<String, Status> {
+    if user.name == "admin" {
+        Ok(format!("{:?}", *storage::lock(state)))
     } else {
-        format!("{:?}", "Only admin can do this.")
+        Err(Status::Forbidden)
     }
 }
 
-#[launch]
-fn rocket() -> _ {
-    let credentials = hashmap! {String::from("admin") =>
-                                hash_password("admin")};
-    //let history = vec![(Utc::now(), 999.99f64)]; // chrono
-    let history = vec![];
-    let transactions = hashmap! {String::from("admin") => history};
-    let storage = Storage {
-        credentials,
-        transactions,
-    };
+/// Seed the in-memory store with the demo `admin`/`admin` account.
+fn demo_storage() -> Storage {
+    Storage {
+        credentials: HashMap::from([(String::from("admin"), hashing::hash_password("admin"))]),
+        transactions: HashMap::from([(String::from("admin"), Vec::new())]),
+    }
+}
 
-    // static_response_handler! {
-    //     "/favicon.ico" => favicon => "/static/favicon.ico",
-    // }
-
-    // Ignite Rocket !!!
+/// Build the Rocket instance around the given storage.
+fn build(storage: Storage) -> Rocket<Build> {
     rocket::build()
         .attach(Template::fairing())
         .mount(
             "/",
             routes![
-                //favicon,
                 login::index,
-                user_banking,
-                user_banking_login,
                 login::login,
                 login::logout,
                 login::login_user,
                 login::login_page,
+                banking::user_banking,
+                banking::user_banking_login,
+                banking::account_info,
+                banking::withdraw,
+                banking::deposit,
+                events::ws,
                 dump,
-                account_info,
-                withdraw,
-                deposit,
-                events::ws
             ],
         )
+        // Static assets (favicon). Mounted under /static so its 404s don't
+        // mask the 401s from guarded routes.
+        .mount("/static", FileServer::from(relative!("static")))
         .manage(Mutex::new(storage))
         .manage(events::Events::default())
+}
 
+#[launch]
+fn rocket() -> _ {
+    build(demo_storage())
 }

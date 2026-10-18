@@ -11,7 +11,7 @@ pub const MAX_TRANSACTION_CENTS: Cents = 100_000_000;
 /// Convert a user supplied decimal amount into cents, validating that it is
 /// finite, strictly positive, has at most two decimal places and does not
 /// exceed [`MAX_TRANSACTION_CENTS`].
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 pub fn parse_amount(amount: f64) -> Result<Cents, &'static str> {
     if !amount.is_finite() {
         return Err("Amount must be a valid number.");

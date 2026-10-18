@@ -54,7 +54,7 @@ pub fn login(
     state: &State<Mutex<Storage>>,
     jar: &CookieJar<'_>,
     login: Form<Login>,
-) -> Result<Redirect, Flash<Redirect>> {
+) -> Result<Redirect, Box<Flash<Redirect>>> {
     // Copy the stored hash out so the (deliberately slow) Argon2 check
     // runs without holding the storage lock.
     let stored_hash = crate::storage::lock(state)
@@ -65,10 +65,10 @@ pub fn login(
         jar.add_private(Cookie::new(SESSION_COOKIE, login.username.clone()));
         Ok(Redirect::to(uri!(crate::banking::user_banking)))
     } else {
-        Err(Flash::error(
+        Err(Box::new(Flash::error(
             Redirect::to(uri!(login_page)),
             "Invalid username/password.",
-        ))
+        )))
     }
 }
 
