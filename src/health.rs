@@ -26,18 +26,12 @@ pub async fn healthz(db: &State<Db>) -> (Status, &'static str) {
 
 const TIMEOUT: Duration = Duration::from_secs(3);
 
-/// Probe the local server using the same configuration (`Rocket.toml` plus
-/// `ROCKET_*` variables) the server reads. Over plain HTTP it requires
-/// `GET /healthz` to return 200; with TLS enabled it only checks that the
-/// port accepts connections (the probe has no TLS client).
-pub fn probe() -> ExitCode {
-    let config = match rocket::Config::try_from(rocket::Config::figment()) {
-        Ok(config) => config,
-        Err(e) => {
-            eprintln!("unhealthy: invalid configuration: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+/// Probe the local server described by `config` (`main` passes the same
+/// configuration the server reads: `Rocket.toml` plus `ROCKET_*` variables).
+/// Over plain HTTP it requires `GET /healthz` to return 200; with TLS enabled
+/// it only checks that the port accepts connections (the probe has no TLS
+/// client).
+pub fn probe(config: &rocket::Config) -> ExitCode {
     match probe_port(config.port, config.tls_enabled()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
@@ -54,17 +48,18 @@ fn probe_port(port: u16, tls: bool) -> Result<(), String> {
     if tls {
         return Ok(());
     }
+    // Setting a timeout only fails for a zero duration.
     stream
         .set_read_timeout(Some(TIMEOUT))
-        .map_err(|e| e.to_string())?;
+        .expect("non-zero timeout");
     stream
         .set_write_timeout(Some(TIMEOUT))
-        .map_err(|e| e.to_string())?;
+        .expect("non-zero timeout");
+    let mut head = [0u8; 12];
     stream
         .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .and_then(|()| stream.read_exact(&mut head))
         .map_err(|e| e.to_string())?;
-    let mut head = [0u8; 12];
-    stream.read_exact(&mut head).map_err(|e| e.to_string())?;
     if head.starts_with(b"HTTP/1.1 200") || head.starts_with(b"HTTP/1.0 200") {
         Ok(())
     } else {
@@ -124,6 +119,46 @@ mod tests {
             .await
             .unwrap();
         assert!(result.unwrap_err().contains("503"));
+        server.await.unwrap();
+    }
+
+    #[rocket::async_test]
+    async fn probe_exit_codes_follow_the_configuration() {
+        let (port, shutdown) = crate::tests_ws::launch().await;
+        let config = |port: u16| rocket::Config {
+            port,
+            ..rocket::Config::debug_default()
+        };
+        let up = rocket::tokio::task::spawn_blocking(move || probe(&config(port)))
+            .await
+            .unwrap();
+        assert_eq!(up, ExitCode::SUCCESS);
+        shutdown.notify();
+        let free = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let down = rocket::tokio::task::spawn_blocking(move || probe(&config(free)))
+            .await
+            .unwrap();
+        assert_eq!(down, ExitCode::FAILURE);
+    }
+
+    #[rocket::async_test]
+    async fn probe_fails_when_the_server_hangs_up_without_answering() {
+        let listener = rocket::tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = rocket::tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            drop(socket);
+        });
+        let result = rocket::tokio::task::spawn_blocking(move || probe_port(port, false))
+            .await
+            .unwrap();
+        assert!(result.is_err());
         server.await.unwrap();
     }
 }

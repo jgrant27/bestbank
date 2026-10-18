@@ -8,8 +8,11 @@ extern crate rocket;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_faults;
+#[cfg(test)]
 mod tests_ws;
 
+mod app;
 mod banking;
 mod csrf;
 mod db;
@@ -24,114 +27,47 @@ mod register;
 mod sessions;
 mod telemetry;
 
-use rocket::figment::Figment;
-use rocket::fs::FileServer;
-use rocket::http::Status;
-use rocket::serde::json::{Value, json};
-use rocket::{Build, Rocket, State};
-use rocket_dyn_templates::Template;
+use std::process::ExitCode;
 
-use db::Db;
+use app::build;
 
-/// Debug dump of users and balances. Admin only. (Password hashes are not
-/// included.)
-#[get("/dump")]
-async fn dump(db: &State<Db>, user: login::User) -> Result<Value, Status> {
-    if user.name != "admin" {
-        return Err(Status::Forbidden);
-    }
-    let mut users = Vec::new();
-    for (id, username) in db::list_users(db)
-        .await
-        .map_err(|e| banking::db_error(&e))?
-    {
-        let balance = db::balance(db, id)
-            .await
-            .map_err(|e| banking::db_error(&e))?;
-        let transactions = db::transactions(db, id)
-            .await
-            .map_err(|e| banking::db_error(&e))?;
-        users.push(json!({
-            "username": username,
-            "balance": money::format_cents(balance),
-            "transactions": transactions.len(),
-        }));
-    }
-    Ok(json!({ "users": users }))
-}
-
-/// The template fairing: minijinja 2 with autoescaping (on for `.html.j2`)
-/// and "semi-strict" undefined handling, so printing a variable the handler
-/// didn't provide is a render error (a 500, caught by tests) instead of
-/// silently rendering nothing. `{% if missing %}` is still allowed.
-fn templates() -> impl rocket::fairing::Fairing {
-    Template::custom(|engines| {
-        engines
-            .minijinja
-            .set_undefined_behavior(minijinja::UndefinedBehavior::SemiStrict);
-    })
-}
-
-/// Build the Rocket instance from a configuration figment (so tests can
-/// point `database_url` at a throwaway database).
-fn build(figment: Figment) -> Rocket<Build> {
-    rocket::custom(figment)
-        .attach(telemetry::RequestLogger)
-        .attach(headers::shield())
-        .attach(headers::SecurityHeaders)
-        .attach(templates())
-        .attach(db::stage())
-        .mount(
-            "/",
-            routes![
-                login::index,
-                login::login,
-                login::logout,
-                login::logout_all,
-                login::logout_all_anonymous,
-                login::login_user,
-                login::login_page,
-                register::register_page,
-                register::register_logged_in,
-                register::register,
-                banking::user_banking,
-                banking::user_banking_login,
-                banking::account_info,
-                banking::withdraw,
-                banking::deposit,
-                banking::transfer,
-                events::ws,
-                csrf::token,
-                health::healthz,
-                dump,
-            ],
-        )
-        // Static assets (favicon, CSS, JS). Mounted under /static so its 404s don't
-        // mask the 401s from guarded routes. Path is relative to the working
-        // directory (like `templates/`).
-        .mount("/static", FileServer::from("static"))
-        .register("/", catchers![ratelimit::too_many_requests])
-        .manage(events::Events::default())
-}
-
+// Process entry point: argument handling, environment-driven logging setup
+// and launching. Everything here is thin glue around tested functions and is
+// excluded from coverage (see README "Coverage").
 #[rocket::main]
-async fn main() -> std::process::ExitCode {
-    // `bestbank healthcheck`: probe a running server (used by the container
-    // HEALTHCHECK; the runtime image has no curl or shell).
+async fn main() -> ExitCode {
     match std::env::args().nth(1).as_deref() {
         None => {}
-        Some("healthcheck") => return health::probe(),
+        // `bestbank healthcheck`: probe a running server (used by the
+        // container HEALTHCHECK; the runtime image has no curl or shell).
+        Some("healthcheck") => {
+            return match rocket::Config::try_from(rocket::Config::figment()) {
+                Ok(config) => health::probe(&config),
+                Err(e) => {
+                    eprintln!("unhealthy: invalid configuration: {e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
         Some(other) => {
             eprintln!("unknown argument {other:?}\nusage: bestbank [healthcheck]");
-            return std::process::ExitCode::from(2);
+            return ExitCode::from(2);
         }
     }
-    telemetry::init();
+    let rust_log = std::env::var("RUST_LOG").ok();
+    let json = std::env::var("BESTBANK_LOG_FORMAT").is_ok_and(|v| v.eq_ignore_ascii_case("json"));
+    let ansi = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let subscriber = telemetry::subscriber(rust_log.as_deref(), json, ansi);
+    // Also captures Rocket's `log` records (Rocket only installs its own
+    // logger when none is set).
+    if tracing_subscriber::util::SubscriberInitExt::try_init(subscriber).is_err() {
+        eprintln!("a global logger was already installed");
+    }
     match build(rocket::Config::figment()).launch().await {
-        Ok(_) => std::process::ExitCode::SUCCESS,
+        Ok(_) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("{}", e.pretty_print());
-            std::process::ExitCode::FAILURE
+            ExitCode::FAILURE
         }
     }
 }

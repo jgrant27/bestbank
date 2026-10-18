@@ -132,21 +132,22 @@ pub async fn connect(url: &str) -> Result<Db, sqlx::Error> {
     let options = SqliteConnectOptions::from_str(url)?
         .create_if_missing(true)
         .foreign_keys(true);
-    let pool = if in_memory {
+    let (pool_options, options) = if in_memory {
         // Every connection to `:memory:` is a separate database, so keep
         // exactly one connection alive for the lifetime of the pool.
-        SqlitePoolOptions::new()
+        let pool_options = SqlitePoolOptions::new()
             .max_connections(1)
             .min_connections(1)
             .idle_timeout(None)
-            .max_lifetime(None)
-            .connect_with(options)
-            .await?
+            .max_lifetime(None);
+        (pool_options, options)
     } else {
-        SqlitePoolOptions::new()
-            .connect_with(options.journal_mode(SqliteJournalMode::Wal))
-            .await?
+        (
+            SqlitePoolOptions::new(),
+            options.journal_mode(SqliteJournalMode::Wal),
+        )
     };
+    let pool = pool_options.connect_with(options).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
     Ok(pool)
 }
@@ -187,7 +188,7 @@ async fn seed_demo_admin(db: &Db) -> Result<(), sqlx::Error> {
     if find_user(db, "admin").await?.is_none() {
         let hash = rocket::tokio::task::spawn_blocking(|| crate::hashing::hash_password("admin"))
             .await
-            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+            .expect("password hashing task panicked");
         create_user(db, "admin", &hash).await?;
         tracing::warn!("seeded demo account admin/admin; never use this outside a demo");
     }
@@ -307,8 +308,8 @@ pub async fn transfer(
     .execute(&mut *tx)
     .await?
     .rows_affected();
+    // Returning early drops `tx`, which rolls the transaction back.
     if debited != 1 {
-        tx.rollback().await?;
         return Ok(Err(TransferError::InsufficientFunds));
     }
     let credited = sqlx::query(
@@ -326,7 +327,6 @@ pub async fn transfer(
     .await?
     .rows_affected();
     if credited != 1 {
-        tx.rollback().await?;
         return Ok(Err(TransferError::RecipientLimit));
     }
     tx.commit().await?;

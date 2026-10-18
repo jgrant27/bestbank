@@ -117,13 +117,10 @@ fn reject_cross_origin(request: &Request<'_>) -> bool {
     if same_origin(request) {
         return false;
     }
-    tracing::warn!(
-        method = %request.method(),
-        path = %request.uri().path(),
-        origin = ?request.headers().get_one("Origin"),
-        referer = ?request.headers().get_one("Referer"),
-        "cross-origin request rejected"
-    );
+    let (method, path) = (request.method(), request.uri().path());
+    let origin = request.headers().get_one("Origin");
+    let referer = request.headers().get_one("Referer");
+    tracing::warn!(%method, %path, ?origin, ?referer, "cross-origin request rejected");
     true
 }
 

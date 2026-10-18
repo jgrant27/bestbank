@@ -11,18 +11,33 @@ use crate::hashing::hash_password;
 use crate::login::SESSION_COOKIE;
 
 /// App config pointing at `database_url`.
-fn figment(database_url: &str) -> Figment {
+/// Install a global subscriber that enables every `tracing` level (output
+/// discarded), so the fields of log events are evaluated in tests too.
+pub(super) fn init_tracing() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::new("trace"))
+            .with_writer(std::io::sink)
+            .finish();
+        // Ignore failure: another test harness may have set one already.
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    });
+}
+
+pub(super) fn figment(database_url: &str) -> Figment {
+    init_tracing();
     rocket::Config::figment().merge(("database_url", database_url))
 }
 
 /// App with a fresh in-memory database (demo admin seeded).
-fn client() -> Client {
+pub(super) fn client() -> Client {
     Client::tracked(super::build(figment("sqlite::memory:"))).expect("valid rocket instance")
 }
 
 /// A file-backed database in a temp dir, pre-populated with `users`.
 /// Keep the `TempDir` alive for as long as the database is used.
-fn file_db(users: &[(&str, &str)]) -> (String, TempDir) {
+pub(super) fn file_db(users: &[(&str, &str)]) -> (String, TempDir) {
     let dir = tempfile::tempdir().expect("temp dir");
     let url = format!("sqlite://{}", dir.path().join("test.db").display());
     let runtime = rocket::tokio::runtime::Runtime::new().unwrap();
@@ -39,7 +54,7 @@ fn file_db(users: &[(&str, &str)]) -> (String, TempDir) {
 }
 
 /// App backed by a file database containing `users` (plus the demo admin).
-fn client_with_users(users: &[(&str, &str)]) -> (Client, TempDir) {
+pub(super) fn client_with_users(users: &[(&str, &str)]) -> (Client, TempDir) {
     let (url, dir) = file_db(users);
     let client = Client::tracked(super::build(figment(&url))).expect("valid rocket instance");
     (client, dir)
@@ -47,7 +62,7 @@ fn client_with_users(users: &[(&str, &str)]) -> (Client, TempDir) {
 
 /// Undo the template engine's HTML escaping (minijinja also escapes `/`),
 /// so tests can look for the plain text a user sees.
-fn page_text(html: &str) -> String {
+pub(super) fn page_text(html: &str) -> String {
     html.replace("&#x2f;", "/")
         .replace("&#x27;", "'")
         .replace("&quot;", "\"")
@@ -57,7 +72,7 @@ fn page_text(html: &str) -> String {
 }
 
 /// The client's current CSRF token (fetching one if it has none yet).
-fn csrf(client: &Client) -> String {
+pub(super) fn csrf(client: &Client) -> String {
     if let Some(cookie) = client.cookies().get_private(CSRF_COOKIE) {
         return cookie.value().to_owned();
     }
@@ -66,7 +81,7 @@ fn csrf(client: &Client) -> String {
 }
 
 /// POST a form, adding the client's CSRF token.
-fn post_form<'c>(client: &'c Client, path: &str, body: &str) -> LocalResponse<'c> {
+pub(super) fn post_form<'c>(client: &'c Client, path: &str, body: &str) -> LocalResponse<'c> {
     let token = csrf(client);
     let sep = if body.is_empty() { "" } else { "&" };
     client
@@ -76,7 +91,7 @@ fn post_form<'c>(client: &'c Client, path: &str, body: &str) -> LocalResponse<'c
         .dispatch()
 }
 
-fn login<'c>(client: &'c Client, user: &str, password: &str) -> LocalResponse<'c> {
+pub(super) fn login<'c>(client: &'c Client, user: &str, password: &str) -> LocalResponse<'c> {
     post_form(
         client,
         "/login",
@@ -84,11 +99,11 @@ fn login<'c>(client: &'c Client, user: &str, password: &str) -> LocalResponse<'c
     )
 }
 
-fn location(response: &LocalResponse<'_>) -> Option<String> {
+pub(super) fn location(response: &LocalResponse<'_>) -> Option<String> {
     response.headers().get_one("Location").map(str::to_owned)
 }
 
-fn post_json(client: &Client, path: &str, body: &str) -> (Status, Value) {
+pub(super) fn post_json(client: &Client, path: &str, body: &str) -> (Status, Value) {
     let token = csrf(client);
     let response = client
         .post(path.to_owned())
@@ -100,7 +115,7 @@ fn post_json(client: &Client, path: &str, body: &str) -> (Status, Value) {
     (status, response.into_json().expect("JSON response"))
 }
 
-fn balance(client: &Client) -> String {
+pub(super) fn balance(client: &Client) -> String {
     let info: Value = client
         .get("/json/account_info")
         .dispatch()
@@ -861,7 +876,12 @@ fn logged_in_users_visiting_login_go_to_their_account() {
     assert_eq!(location(&response).as_deref(), Some("/user_banking"));
 }
 
-fn login_from<'c>(client: &'c Client, ip: &str, user: &str, password: &str) -> LocalResponse<'c> {
+pub(super) fn login_from<'c>(
+    client: &'c Client,
+    ip: &str,
+    user: &str,
+    password: &str,
+) -> LocalResponse<'c> {
     let token = csrf(client);
     client
         .post("/login")
@@ -1281,7 +1301,7 @@ fn allowed_origins_config_overrides_host_matching() {
 }
 
 /// Logged-in clients for each `(user, password)` over one shared file DB.
-fn clients_for(users: &[(&str, &str)]) -> (Vec<Client>, TempDir) {
+pub(super) fn clients_for(users: &[(&str, &str)]) -> (Vec<Client>, TempDir) {
     let (url, dir) = file_db(users);
     let clients = users
         .iter()
@@ -1297,7 +1317,7 @@ fn clients_for(users: &[(&str, &str)]) -> (Vec<Client>, TempDir) {
     (clients, dir)
 }
 
-fn transactions_of(client: &Client) -> Vec<Value> {
+pub(super) fn transactions_of(client: &Client) -> Vec<Value> {
     let info: Value = client
         .get("/json/account_info")
         .dispatch()

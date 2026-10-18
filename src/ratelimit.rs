@@ -85,14 +85,15 @@ fn throttle(request: &Request<'_>, action: Action) -> request::Outcome<(), ()> {
     let Some(limiter) = request.rocket().state::<RateLimiter>() else {
         return request::Outcome::Success(());
     };
-    match limiter.check(request.client_ip(), action) {
+    let client_ip = request.client_ip();
+    match limiter.check(client_ip, action) {
         Ok(()) => request::Outcome::Success(()),
         Err(retry) => {
             let secs = retry.as_secs() + u64::from(retry.subsec_nanos() > 0);
             request.local_cache(|| RetryAfter(secs.max(1)));
             tracing::warn!(
-                client_ip = ?request.client_ip(),
-                action = ?action,
+                ?client_ip,
+                ?action,
                 retry_after_secs = secs,
                 "rate limit exceeded"
             );
@@ -198,6 +199,38 @@ mod tests {
         let limiter = RateLimiter::new(0, Duration::from_secs(60));
         for _ in 0..100 {
             assert!(limiter.check(A, Action::Login).is_ok());
+        }
+    }
+
+    #[test]
+    fn stale_buckets_are_pruned_when_the_map_grows_large() {
+        let limiter = RateLimiter::new(1, Duration::from_millis(1));
+        for i in 0..=u32::try_from(PRUNE_THRESHOLD).unwrap() {
+            let ip = Some(IpAddr::V4(std::net::Ipv4Addr::from(i)));
+            assert!(limiter.check(ip, Action::Login).is_ok());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(limiter.check(A, Action::Login).is_ok());
+        let buckets = limiter.buckets.lock().unwrap();
+        assert_eq!(buckets.len(), 1, "expired buckets removed");
+    }
+
+    #[get("/attempt")]
+    fn attempt(_login: LoginAttempt, _register: RegisterAttempt) -> &'static str {
+        "ok"
+    }
+
+    #[test]
+    fn guards_allow_everything_when_no_limiter_is_configured() {
+        let client = rocket::local::blocking::Client::untracked(
+            rocket::build().mount("/", routes![attempt]),
+        )
+        .unwrap();
+        for _ in 0..3 {
+            assert_eq!(
+                client.get("/attempt").dispatch().into_string().as_deref(),
+                Some("ok")
+            );
         }
     }
 }

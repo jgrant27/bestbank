@@ -76,4 +76,11 @@ mod tests {
         assert_eq!(format_cents(1234), "12.34");
         assert_eq!(format_cents(-1234), "-12.34");
     }
+
+    #[test]
+    fn tiny_positive_amounts_round_to_zero_and_are_rejected() {
+        // Within the float tolerance of 0 cents, so it isn't caught by the
+        // decimal-places check.
+        assert_eq!(parse_amount(1e-9), Err("Amount must be greater than 💵0."));
+    }
 }

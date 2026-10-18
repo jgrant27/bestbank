@@ -149,6 +149,7 @@ pub(crate) async fn launch() -> (u16, rocket::Shutdown) {
 
 /// Like [`launch`], with extra config overrides.
 async fn launch_with(overrides: &[(&str, i64)]) -> (u16, rocket::Shutdown) {
+    crate::tests::init_tracing();
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -327,6 +328,48 @@ async fn transfers_notify_both_parties_only() {
         next_text(&mut grace_ws, Duration::from_millis(300)).await,
         None,
         "uninvolved users see nothing"
+    );
+    shutdown.notify();
+}
+
+#[rocket::async_test]
+async fn websocket_survives_session_checks_ignores_client_messages_and_ends_on_close() {
+    use rocket::futures::SinkExt;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let (port, shutdown) = launch_with(&[("session_check_secs", 1)]).await;
+    let mut hank = register_and_login(port, "hank", "sunny-river-42").await;
+    let mut ws = hank.websocket().await.expect("ws");
+
+    // Clients may send messages; they're ignored.
+    ws.send(Message::Text("hello".into())).await.unwrap();
+    // Live session checks pass while the session is valid...
+    rocket::tokio::time::sleep(Duration::from_millis(2500)).await;
+    // ...and events still arrive afterwards.
+    assert_eq!(
+        hank.json("/json/deposit", r#"{"amount": 1}"#).await.status,
+        200
+    );
+    assert_eq!(
+        next_text(&mut ws, Duration::from_secs(3)).await.as_deref(),
+        Some("Successful deposit for 💵1.00")
+    );
+
+    // A client-initiated close ends the server side cleanly.
+    ws.close(None).await.unwrap();
+    let ended = timeout(Duration::from_secs(3), async {
+        while let Some(Ok(_)) = ws.next().await {}
+    })
+    .await;
+    assert!(ended.is_ok(), "server finished the close handshake");
+
+    // Dropping the TCP connection without a close frame also ends it.
+    let ws = hank.websocket().await.expect("second ws");
+    drop(ws);
+    rocket::tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        hank.json("/json/deposit", r#"{"amount": 1}"#).await.status,
+        200
     );
     shutdown.notify();
 }

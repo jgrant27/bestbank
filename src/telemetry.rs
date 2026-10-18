@@ -25,24 +25,26 @@ const DEFAULT_FILTER: &str = "info,rocket=warn,rocket::launch=info,rocket::launc
      rocket::server::_=error,rocket_dyn_templates=warn,bestbank::login::_=error,\
      bestbank::banking::_=error,bestbank::events::_=error,bestbank::_=error";
 
-/// Install the global `tracing` subscriber (which also captures Rocket's
-/// `log` records). Safe to call more than once.
-pub fn init() {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(DEFAULT_FILTER));
-    let json = std::env::var("BESTBANK_LOG_FORMAT").is_ok_and(|v| v.eq_ignore_ascii_case("json"));
+/// Build the `tracing` subscriber. `rust_log` is a `RUST_LOG`-style filter
+/// (falls back to the default when absent or invalid); `json` switches to
+/// one JSON object per line; `ansi` enables colours (only for terminals).
+/// `main` installs it globally, which also captures Rocket's `log` records.
+pub fn subscriber(
+    rust_log: Option<&str>,
+    json: bool,
+    ansi: bool,
+) -> Box<dyn tracing::Subscriber + Send + Sync> {
+    let filter = rust_log
+        .and_then(|directives| EnvFilter::try_new(directives).ok())
+        .unwrap_or_else(|| EnvFilter::new(DEFAULT_FILTER));
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)
-        // No colour codes when logs go to a file, a pipe or `docker logs`.
-        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()));
-    let result = if json {
-        builder.json().flatten_event(true).try_init()
+        .with_ansi(ansi);
+    if json {
+        Box::new(builder.json().flatten_event(true).finish())
     } else {
-        builder.compact().try_init()
-    };
-    if result.is_err() {
-        tracing::debug!("tracing subscriber already installed");
+        Box::new(builder.compact().finish())
     }
 }
 
@@ -67,6 +69,11 @@ pub fn random_hex(bytes: usize) -> String {
 pub struct RequestId(pub String);
 
 struct RequestStart(Instant);
+
+/// When the request arrived (recorded by `on_request`).
+fn request_start<'r>(request: &'r Request<'_>) -> &'r RequestStart {
+    request.local_cache(|| RequestStart(Instant::now()))
+}
 
 fn is_valid_incoming(id: &str) -> bool {
     (8..=64).contains(&id.len())
@@ -107,16 +114,13 @@ impl Fairing for RequestLogger {
     }
 
     async fn on_request(&self, request: &mut Request<'_>, _: &mut Data<'_>) {
-        request.local_cache(|| RequestStart(Instant::now()));
+        request_start(request);
         request_id(request);
     }
 
     async fn on_response<'r>(&self, request: &'r Request<'_>, response: &mut Response<'r>) {
         let id = &request_id(request).0;
-        let elapsed = request
-            .local_cache(|| RequestStart(Instant::now()))
-            .0
-            .elapsed();
+        let elapsed = request_start(request).0.elapsed();
         response.set_header(Header::new(REQUEST_ID_HEADER, id.clone()));
         let status = response.status().code;
         let latency_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
@@ -153,5 +157,22 @@ mod tests {
         assert!(!is_valid_incoming("has spaces in it"));
         assert!(!is_valid_incoming(&"x".repeat(65)));
         assert!(!is_valid_incoming("inject\r\nheader"));
+    }
+
+    #[test]
+    fn subscriber_variants_build_and_log() {
+        for (rust_log, json, ansi) in [
+            (None, false, false),
+            (Some("debug"), true, false),
+            (Some("info,bestbank=trace"), false, true),
+            // Invalid directives fall back to the default filter.
+            (Some("bestbank=notalevel"), false, false),
+        ] {
+            let subscriber = subscriber(rust_log, json, ansi);
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::info!(target: "bestbank::http", status = 200, "request");
+                tracing::debug!("detail");
+            });
+        }
     }
 }

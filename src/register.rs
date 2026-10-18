@@ -137,11 +137,11 @@ pub async fn register(
         return Some(error(message));
     }
     let password = form.password.clone();
-    let Ok(hash) =
-        rocket::tokio::task::spawn_blocking(move || crate::hashing::hash_password(&password)).await
-    else {
-        return Some(error("Something went wrong, please try again."));
-    };
+    // A panic while hashing (never expected) propagates and becomes a 500.
+    let hash =
+        rocket::tokio::task::spawn_blocking(move || crate::hashing::hash_password(&password))
+            .await
+            .expect("password hashing task panicked");
     match db::create_user(db, &form.username, &hash).await {
         Ok(_) => {
             tracing::info!(request_id = %request_id.0, username = ?form.username, "user registered");

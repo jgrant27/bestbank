@@ -187,6 +187,53 @@ HTTP/2 is disabled so the vulnerable `h2` isn't compiled in. The remaining
 rustls/webpki advisories affect TLS clients and certificate verification,
 which this server never does; they're ignored in `deny.toml` with reasons.
 
+### Coverage
+
+```
+rustup component add llvm-tools-preview
+cargo install --locked cargo-llvm-cov
+cargo llvm-cov --ignore-filename-regex 'src/(tests[a-z_]*|main)\.rs'          # summary
+cargo llvm-cov --ignore-filename-regex 'src/(tests[a-z_]*|main)\.rs' --html   # target/llvm-cov/html
+```
+
+Current numbers (stable Rust, 105 tests): **lines 99.55%** (7 of 1543
+missed), **regions 99.45%** (12 of 2188), functions 97.63%. CI fails if
+lines drop below 99.5%, regions below 99.4% or functions below 97.5%.
+
+Failure paths are tested by fault injection (`src/tests_faults.rs`):
+SQLite triggers that `RAISE(ABORT)` on a chosen insert/update/delete,
+renamed or dropped tables and columns, undecodable rows, a corrupted
+migration checksum, a second writer holding the lock, and a reader blocking
+`COMMIT`. Tests install a TRACE-level `tracing` subscriber so log fields are
+evaluated too.
+
+Deliberately excluded or left uncovered, and why:
+
+* `src/main.rs` (excluded): process entry only — argument dispatch, global
+  logger install, `launch()` and exit codes. Everything it calls
+  (`app::build`, `health::probe`, `telemetry::subscriber`) is tested
+  directly. `#[coverage(off)]` is still unstable, so exclusion is per file.
+* `src/tests*.rs` (excluded): the tests themselves.
+* `events.rs`, websocket `send` error (`?` region) and
+  `RecvError::Closed`: the first needs the client to vanish between the
+  session check and the write (a race); the second needs the broadcast
+  channel dropped, but the managed `Events` lives as long as the server.
+* `#[derive(FromForm)]` on `Login`, `CsrfOnly`, `Registration` and
+  `#[catch(429)]`: macro-generated closures/monomorphs (per-field error
+  builders, `into_info`) that Rocket only calls in combinations that don't
+  reach our code. Missing, duplicated, unknown and multipart fields are tested.
+* Field regions of four `tracing` events (`login.rs`, `register.rs`): with
+  the `log` feature (enabled by sqlx) `tracing` macros expand the fields
+  twice, once for the fallback that only runs when *no* subscriber is
+  installed; the events themselves are covered.
+* TLS-only code: none is left uncovered. The health probe's TLS mode (a
+  TCP connect only, since it has no TLS client) is tested directly, and the
+  TLS/container profiles are checked with `Config::tls_enabled()`.
+* Poison recovery and impossible failures: mutex poisoning is recovered with
+  `unwrap_or_else(PoisonError::into_inner)` and impossible errors (zero
+  timeouts, a panicked hashing task) use `.expect(..)`. Neither adds a
+  separate branch region, so nothing is excluded for them.
+
 ### Security notes
 
 What the demo does:
