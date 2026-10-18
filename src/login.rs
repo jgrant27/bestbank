@@ -13,6 +13,9 @@ use rocket_dyn_templates::Template;
 
 use crate::storage::Storage;
 
+/// Name of the (private, encrypted) session cookie.
+pub const SESSION_COOKIE: &str = "user_name";
+
 #[derive(FromForm)]
 pub struct Login {
     pub username: String,
@@ -29,12 +32,20 @@ impl<'r> FromRequest<'r> for User {
     type Error = std::convert::Infallible;
 
     async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
-        request
+        // The session cookie is a Rocket *private* cookie: it is encrypted and
+        // authenticated with the app's secret key, so a client cannot forge or
+        // tamper with it. We additionally check that the user still exists.
+        let name = request
             .cookies()
-            .get("user_name")
-            .and_then(|cookie| cookie.value().parse().ok())
-            .map(|name| User { name: name })
-            .or_forward(Status::Ok)
+            .get_private(SESSION_COOKIE)
+            .map(|cookie| cookie.value().to_owned());
+        let exists = match (&name, request.rocket().state::<Mutex<Storage>>()) {
+            (Some(name), Some(state)) => state.lock().unwrap().credentials.contains_key(name),
+            _ => false,
+        };
+        name.filter(|_| exists)
+            .map(|name| User { name })
+            .or_forward(Status::Unauthorized)
     }
 }
 
@@ -49,7 +60,7 @@ pub fn login(
         && *storage.credentials.get(&login.username).unwrap()
             == crate::hashing::calculate_hash(&login.password).to_string()
     {
-        jar.add(Cookie::new("user_name", login.username.to_owned()));
+        jar.add_private(Cookie::new(SESSION_COOKIE, login.username.clone()));
         Ok(Redirect::to(uri!(crate::banking::user_banking)))
     } else {
         Err(Flash::error(
@@ -77,7 +88,7 @@ pub fn login_page(_flash: Option<FlashMessage>) -> Template {
 
 #[post("/logout")]
 pub fn logout(jar: &CookieJar<'_>) -> Flash<Redirect> {
-    jar.remove(Cookie::from("user_name"));
+    jar.remove_private(Cookie::from(SESSION_COOKIE));
     Flash::success(Redirect::to(uri!(login_page)), "Successfully logged out.")
 }
 

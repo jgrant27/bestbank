@@ -14,6 +14,6 @@ serde_derive = "1.0"
 ws = "0.9"
 mio = "1"
 
-rocket = { version = "0.5.1", features = ["json"] }
+rocket = { version = "0.5.1", features = ["json", "secrets"] }
 rocket_dyn_templates = { version = "0.2.0", features = ["handlebars", "tera"] }
 rocket-include-static-resources = "0.10.5"
