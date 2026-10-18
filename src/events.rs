@@ -52,6 +52,7 @@ pub fn ws(ws: WebSocket, user: User, events: &State<Events>) -> Channel<'static>
     let name = user.name;
     ws.channel(move |mut stream| {
         Box::pin(async move {
+            tracing::debug!(username = ?name, "websocket connected");
             loop {
                 select! {
                     event = rx.recv() => match event {
@@ -69,6 +70,7 @@ pub fn ws(ws: WebSocket, user: User, events: &State<Events>) -> Channel<'static>
                     },
                 }
             }
+            tracing::debug!(username = ?name, "websocket disconnected");
             Ok(())
         })
     })

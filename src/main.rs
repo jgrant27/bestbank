@@ -14,6 +14,7 @@ mod hashing;
 mod login;
 mod money;
 mod storage;
+mod telemetry;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -46,6 +47,7 @@ fn demo_storage() -> Storage {
 /// Build the Rocket instance around the given storage.
 fn build(storage: Storage) -> Rocket<Build> {
     rocket::build()
+        .attach(telemetry::RequestLogger)
         .attach(Template::fairing())
         .mount(
             "/",
@@ -73,5 +75,6 @@ fn build(storage: Storage) -> Rocket<Build> {
 
 #[launch]
 fn rocket() -> _ {
+    telemetry::init();
     build(demo_storage())
 }

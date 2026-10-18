@@ -7,10 +7,13 @@ edition = "2024"
 [dependencies]
 argon2 = "0.6"
 chrono = "0.4"
+getrandom = "0.4"
 rocket = { version = "0.5.1", features = ["json", "secrets", "tls"] }
 rocket_dyn_templates = { version = "0.2.0", features = ["handlebars"] }
 rocket_ws = "0.1.1"
 serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Argon2 is intentionally expensive; optimise it even in debug/test builds so
 # logins (and the test suite) stay fast.

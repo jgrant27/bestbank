@@ -11,6 +11,7 @@ use rocket::response::{Flash, Redirect};
 use rocket_dyn_templates::Template;
 
 use crate::storage::Storage;
+use crate::telemetry::RequestId;
 
 /// Name of the (private, encrypted) session cookie.
 pub const SESSION_COOKIE: &str = "user_name";
@@ -53,6 +54,7 @@ pub fn login(
     state: &State<Mutex<Storage>>,
     jar: &CookieJar<'_>,
     login: Form<Login>,
+    request_id: RequestId,
 ) -> Result<Redirect, Box<Flash<Redirect>>> {
     // Copy the stored hash out so the (deliberately slow) Argon2 check
     // runs without holding the storage lock.
@@ -69,8 +71,11 @@ pub fn login(
                 .http_only(true)
                 .same_site(SameSite::Strict),
         );
+        // Debug-format user input so control characters can't forge log lines.
+        tracing::info!(request_id = %request_id.0, username = ?login.username, "login succeeded");
         Ok(Redirect::to(uri!(crate::banking::user_banking)))
     } else {
+        tracing::warn!(request_id = %request_id.0, username = ?login.username, "login failed");
         Err(Box::new(Flash::error(
             Redirect::to(uri!(login_page)),
             "Invalid username/password.",
@@ -94,7 +99,10 @@ pub fn login_page(flash: Option<FlashMessage<'_>>) -> Template {
 }
 
 #[post("/logout")]
-pub fn logout(jar: &CookieJar<'_>) -> Flash<Redirect> {
+pub fn logout(jar: &CookieJar<'_>, request_id: RequestId) -> Flash<Redirect> {
+    if let Some(cookie) = jar.get_private(SESSION_COOKIE) {
+        tracing::info!(request_id = %request_id.0, username = ?cookie.value(), "logout");
+    }
     jar.remove_private(Cookie::from(SESSION_COOKIE));
     Flash::success(Redirect::to(uri!(login_page)), "Successfully logged out.")
 }

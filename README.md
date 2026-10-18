@@ -74,6 +74,20 @@ Amounts must be positive, have at most two decimal places and be at most
 a 4xx status with `{"success": false, "message": "..."}`. Unauthenticated API
 requests get `401`.
 
+### Logging
+
+Logs are structured [`tracing`](https://docs.rs/tracing) events (Rocket's own
+log output is routed through the same subscriber). Each request gets an ID,
+which is returned in the `X-Request-Id` response header and included in that
+request's log lines; a well-formed incoming `X-Request-Id` (e.g. from a proxy)
+is reused. Logins, failed logins, logouts and transactions are logged with
+structured fields.
+
+```
+RUST_LOG=debug cargo run                 # more verbose
+BESTBANK_LOG_FORMAT=json cargo run       # one JSON object per line
+```
+
 ### Tests
 
 ```

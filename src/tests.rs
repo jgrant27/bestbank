@@ -324,3 +324,46 @@ fn favicon_is_served() {
     let response = client.get("/static/favicon.ico").dispatch();
     assert_eq!(response.status(), Status::Ok);
 }
+
+#[test]
+fn responses_carry_unique_request_ids() {
+    let client = client();
+    let id = |path: &str| {
+        client
+            .get(path.to_owned())
+            .dispatch()
+            .headers()
+            .get_one(crate::telemetry::REQUEST_ID_HEADER)
+            .map(str::to_owned)
+            .expect("X-Request-Id header")
+    };
+    let a = id("/login");
+    let b = id("/login");
+    assert_eq!(a.len(), 16);
+    assert_ne!(a, b);
+    // Also set on error and redirect responses.
+    id("/json/account_info");
+    id("/");
+}
+
+#[test]
+fn valid_incoming_request_id_is_reused_and_bogus_one_replaced() {
+    let client = client();
+    let send = |value: &str| {
+        client
+            .get("/login")
+            .header(rocket::http::Header::new(
+                crate::telemetry::REQUEST_ID_HEADER,
+                value.to_owned(),
+            ))
+            .dispatch()
+            .headers()
+            .get_one(crate::telemetry::REQUEST_ID_HEADER)
+            .map(str::to_owned)
+            .unwrap()
+    };
+    assert_eq!(send("proxy-req-12345678"), "proxy-req-12345678");
+    let replaced = send("bad id!");
+    assert_ne!(replaced, "bad id!");
+    assert_eq!(replaced.len(), 16);
+}

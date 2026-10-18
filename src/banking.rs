@@ -4,6 +4,7 @@ use crate::events::Events;
 use crate::login::User;
 use crate::money::{Cents, format_cents, parse_amount};
 use crate::storage::{self, SharedStorage};
+use crate::telemetry::RequestId;
 
 use rocket::State;
 use rocket::http::Status;
@@ -83,6 +84,7 @@ pub fn withdraw(
     state: &State<SharedStorage>,
     events: &State<Events>,
     user: User,
+    request_id: RequestId,
 ) -> ApiResponse {
     let cents = match validate(payload) {
         Ok(cents) => cents,
@@ -96,6 +98,7 @@ pub fn withdraw(
     }
     transactions.push((Utc::now(), -cents));
     drop(storage);
+    tracing::info!(request_id = %request_id.0, username = ?user_name, cents, kind = "withdrawal", "transaction");
     events.publish(
         &user_name,
         format!("Successful withdrawal for 💵{}", format_cents(cents)),
@@ -109,6 +112,7 @@ pub fn deposit(
     state: &State<SharedStorage>,
     events: &State<Events>,
     user: User,
+    request_id: RequestId,
 ) -> ApiResponse {
     let cents = match validate(payload) {
         Ok(cents) => cents,
@@ -122,6 +126,7 @@ pub fn deposit(
     }
     transactions.push((Utc::now(), cents));
     drop(storage);
+    tracing::info!(request_id = %request_id.0, username = ?user_name, cents, kind = "deposit", "transaction");
     events.publish(
         &user_name,
         format!("Successful deposit for 💵{}", format_cents(cents)),
