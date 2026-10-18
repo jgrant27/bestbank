@@ -55,13 +55,13 @@ pub fn login(
     jar: &CookieJar<'_>,
     login: Form<Login>,
 ) -> Result<Redirect, Flash<Redirect>> {
-    let storage = crate::storage::lock(state);
-    let expected = crate::hashing::calculate_hash(&login.password).to_string();
-    if storage
+    // Copy the stored hash out so the (deliberately slow) Argon2 check
+    // runs without holding the storage lock.
+    let stored_hash = crate::storage::lock(state)
         .credentials
         .get(&login.username)
-        .is_some_and(|hash| *hash == expected)
-    {
+        .cloned();
+    if stored_hash.is_some_and(|hash| crate::hashing::verify_password(&login.password, &hash)) {
         jar.add_private(Cookie::new(SESSION_COOKIE, login.username.clone()));
         Ok(Redirect::to(uri!(crate::banking::user_banking)))
     } else {

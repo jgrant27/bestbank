@@ -37,7 +37,7 @@ fn dump(state: &State<Mutex<storage::Storage>>, user: login::User) -> String {
 #[launch]
 fn rocket() -> _ {
     let credentials = hashmap! {String::from("admin") =>
-                                calculate_hash(&"admin").to_string()};
+                                hash_password("admin")};
     //let history = vec![(Utc::now(), 999.99f64)]; // chrono
     let history = vec![];
     let transactions = hashmap! {String::from("admin") => history};

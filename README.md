@@ -67,4 +67,6 @@ Warning: environment is 'production', but no `secret_key` is configured
 ```
 
 ## Log in
-User is admin:admin
+A single demo account is seeded at startup: **admin / admin**.
+Passwords are hashed with Argon2id and a random salt, but this default
+account exists for demo purposes only and must never be used anywhere real.
