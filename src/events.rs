@@ -26,14 +26,19 @@ pub struct Events {
 
 impl Default for Events {
     fn default() -> Self {
-        Self { tx: broadcast::channel(256).0 }
+        Self {
+            tx: broadcast::channel(256).0,
+        }
     }
 }
 
 impl Events {
     /// Publish an event. It is fine if nobody is listening.
     pub fn publish(&self, user_name: &str, message: String) {
-        let _ = self.tx.send(Event { user_name: user_name.to_owned(), message });
+        let _ = self.tx.send(Event {
+            user_name: user_name.to_owned(),
+            message,
+        });
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {

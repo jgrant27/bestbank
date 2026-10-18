@@ -1,15 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use rocket::State;
+use rocket::form::Form;
 use rocket::http::{Cookie, CookieJar, SameSite, Status};
 use rocket::outcome::IntoOutcome;
 use rocket::request::{self, FlashMessage, FromRequest, Request};
 use rocket::response::{Flash, Redirect};
-use rocket::State;
-use rocket::form::Form;
 
 use rocket_dyn_templates::Template;
-
 
 use crate::storage::Storage;
 

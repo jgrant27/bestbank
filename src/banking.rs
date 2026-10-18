@@ -25,7 +25,10 @@ pub fn user_banking_login() -> Redirect {
 #[get("/user_banking")]
 pub fn user_banking(state: &State<SharedStorage>, user: User) -> Template {
     let storage = storage::lock(state);
-    let transactions = storage.transactions.get(&user.name).map_or(&[][..], Vec::as_slice);
+    let transactions = storage
+        .transactions
+        .get(&user.name)
+        .map_or(&[][..], Vec::as_slice);
     let mut context = HashMap::new();
     context.insert("balance", format_cents(balance_of(transactions)));
     context.insert("user_name", user.name);
@@ -35,7 +38,10 @@ pub fn user_banking(state: &State<SharedStorage>, user: User) -> Template {
 #[get("/json/account_info")]
 pub fn account_info(state: &State<SharedStorage>, user: User) -> Value {
     let storage = storage::lock(state);
-    let transactions = storage.transactions.get(&user.name).map_or(&[][..], Vec::as_slice);
+    let transactions = storage
+        .transactions
+        .get(&user.name)
+        .map_or(&[][..], Vec::as_slice);
     let transactions_json: Vec<(String, String)> = transactions
         .iter()
         .rev()
@@ -63,7 +69,10 @@ fn failure(status: Status, message: &str) -> ApiResponse {
 
 fn validate(payload: Result<Json<Payload>, json::Error<'_>>) -> Result<Cents, ApiResponse> {
     let payload = payload.map_err(|_| {
-        failure(Status::BadRequest, "Request body must be JSON like {\"amount\": 12.34}.")
+        failure(
+            Status::BadRequest,
+            "Request body must be JSON like {\"amount\": 12.34}.",
+        )
     })?;
     parse_amount(payload.amount).map_err(|msg| failure(Status::UnprocessableEntity, msg))
 }
@@ -87,7 +96,10 @@ pub fn withdraw(
     }
     transactions.push((Utc::now(), -cents));
     drop(storage);
-    events.publish(&user_name, format!("Successful withdrawal for 💵{}", format_cents(cents)));
+    events.publish(
+        &user_name,
+        format!("Successful withdrawal for 💵{}", format_cents(cents)),
+    );
     (Status::Ok, json!({ "success": true }))
 }
 
@@ -110,6 +122,9 @@ pub fn deposit(
     }
     transactions.push((Utc::now(), cents));
     drop(storage);
-    events.publish(&user_name, format!("Successful deposit for 💵{}", format_cents(cents)));
+    events.publish(
+        &user_name,
+        format!("Successful deposit for 💵{}", format_cents(cents)),
+    );
     (Status::Ok, json!({ "success": true }))
 }

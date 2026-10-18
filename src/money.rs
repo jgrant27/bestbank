@@ -55,7 +55,16 @@ mod tests {
 
     #[test]
     fn rejects_invalid_amounts() {
-        for bad in [0.0, -1.0, -0.01, 0.001, 1.234, f64::NAN, f64::INFINITY, 1_000_000.01] {
+        for bad in [
+            0.0,
+            -1.0,
+            -0.01,
+            0.001,
+            1.234,
+            f64::NAN,
+            f64::INFINITY,
+            1_000_000.01,
+        ] {
             assert!(parse_amount(bad).is_err(), "{bad} should be rejected");
         }
     }

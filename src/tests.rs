@@ -72,7 +72,10 @@ fn login_page_renders() {
     assert!(body.contains("Please Login"));
     assert!(body.contains(r#"name="username""#));
     assert!(body.contains(r#"name="password""#));
-    assert!(!body.contains("class=\"flash"), "no flash without a message");
+    assert!(
+        !body.contains("class=\"flash"),
+        "no flash without a message"
+    );
 }
 
 #[test]
@@ -96,7 +99,10 @@ fn bad_login_is_rejected_with_flash() {
         let page = client.get("/login").dispatch().into_string().unwrap();
         assert!(page.contains("Invalid username/password."), "{user}/{pass}");
     }
-    assert_eq!(client.get("/json/account_info").dispatch().status(), Status::Unauthorized);
+    assert_eq!(
+        client.get("/json/account_info").dispatch().status(),
+        Status::Unauthorized
+    );
 }
 
 #[test]
@@ -106,7 +112,10 @@ fn good_login_works_and_logout_ends_session() {
     assert_eq!(response.status(), Status::SeeOther);
     assert_eq!(location(&response).as_deref(), Some("/user_banking"));
 
-    let cookie = response.cookies().get(SESSION_COOKIE).expect("session cookie");
+    let cookie = response
+        .cookies()
+        .get(SESSION_COOKIE)
+        .expect("session cookie");
     assert_ne!(cookie.value(), "admin", "session cookie must be encrypted");
     assert_eq!(cookie.http_only(), Some(true));
     assert_eq!(cookie.same_site(), Some(SameSite::Strict));
@@ -115,7 +124,11 @@ fn good_login_works_and_logout_ends_session() {
     assert_eq!(page.status(), Status::Ok);
     assert!(page.into_string().unwrap().contains("Best Bank"));
 
-    let info: Value = client.get("/json/account_info").dispatch().into_json().unwrap();
+    let info: Value = client
+        .get("/json/account_info")
+        .dispatch()
+        .into_json()
+        .unwrap();
     assert_eq!(info["user_name"], "admin");
     assert_eq!(info["balance"], "0.00");
 
@@ -126,8 +139,14 @@ fn good_login_works_and_logout_ends_session() {
     assert_eq!(response.status(), Status::SeeOther);
     let page = client.get("/login").dispatch().into_string().unwrap();
     assert!(page.contains("Successfully logged out."));
-    assert_eq!(client.get("/json/account_info").dispatch().status(), Status::Unauthorized);
-    assert_eq!(client.get("/dump").dispatch().status(), Status::Unauthorized);
+    assert_eq!(
+        client.get("/json/account_info").dispatch().status(),
+        Status::Unauthorized
+    );
+    assert_eq!(
+        client.get("/dump").dispatch().status(),
+        Status::Unauthorized
+    );
 }
 
 #[test]
@@ -156,7 +175,10 @@ fn forged_plain_cookie_is_rejected() {
 
 #[test]
 fn dump_is_admin_only() {
-    let client = client_with(storage(&[("admin", "admin"), ("alice", "pw")], &["admin", "alice"]));
+    let client = client_with(storage(
+        &[("admin", "admin"), ("alice", "pw")],
+        &["admin", "alice"],
+    ));
     login(&client, "alice", "pw");
     assert_eq!(client.get("/dump").dispatch().status(), Status::Forbidden);
 }
@@ -178,7 +200,13 @@ fn deposit_validation() {
         assert_eq!(json["success"], false, "{body}");
         assert!(json["message"].is_string(), "{body}");
     }
-    for body in [r#"{"amount": "abc"}"#, r#"{"amount": null}"#, "{}", "not json", ""] {
+    for body in [
+        r#"{"amount": "abc"}"#,
+        r#"{"amount": null}"#,
+        "{}",
+        "not json",
+        "",
+    ] {
         let (status, json) = post_json(&client, "/json/deposit", body);
         assert_eq!(status, Status::BadRequest, "{body:?}");
         assert_eq!(json["success"], false, "{body:?}");
@@ -186,8 +214,14 @@ fn deposit_validation() {
     assert_eq!(balance(&client), "0.00");
 
     // Integer cents: 0.1 + 0.2 is exactly 0.30, not 0.30000000000000004.
-    assert_eq!(post_json(&client, "/json/deposit", r#"{"amount": 0.1}"#).0, Status::Ok);
-    assert_eq!(post_json(&client, "/json/deposit", r#"{"amount": 0.2}"#).0, Status::Ok);
+    assert_eq!(
+        post_json(&client, "/json/deposit", r#"{"amount": 0.1}"#).0,
+        Status::Ok
+    );
+    assert_eq!(
+        post_json(&client, "/json/deposit", r#"{"amount": 0.2}"#).0,
+        Status::Ok
+    );
     assert_eq!(balance(&client), "0.30");
 }
 
@@ -207,14 +241,24 @@ fn withdraw_validation_and_overdraft() {
     }
 
     let (status, json) = post_json(&client, "/json/deposit", r#"{"amount": 10.10}"#);
-    assert_eq!((status, json["success"].as_bool()), (Status::Ok, Some(true)));
+    assert_eq!(
+        (status, json["success"].as_bool()),
+        (Status::Ok, Some(true))
+    );
     let (status, _) = post_json(&client, "/json/withdraw", r#"{"amount": 10.11}"#);
     assert_eq!(status, Status::UnprocessableEntity, "overdraft by one cent");
     let (status, json) = post_json(&client, "/json/withdraw", r#"{"amount": 10.10}"#);
-    assert_eq!((status, json["success"].as_bool()), (Status::Ok, Some(true)));
+    assert_eq!(
+        (status, json["success"].as_bool()),
+        (Status::Ok, Some(true))
+    );
     assert_eq!(balance(&client), "0.00");
 
-    let info: Value = client.get("/json/account_info").dispatch().into_json().unwrap();
+    let info: Value = client
+        .get("/json/account_info")
+        .dispatch()
+        .into_json()
+        .unwrap();
     let txs = info["transactions"].as_array().unwrap();
     assert_eq!(txs.len(), 2);
     assert_eq!(txs[0][1], "-10.10", "newest first");
@@ -231,7 +275,10 @@ fn user_without_history_does_not_panic() {
     assert_eq!(balance(&client), "0.00");
     let (status, _) = post_json(&client, "/json/withdraw", r#"{"amount": 1}"#);
     assert_eq!(status, Status::UnprocessableEntity);
-    assert_eq!(post_json(&client, "/json/deposit", r#"{"amount": 5}"#).0, Status::Ok);
+    assert_eq!(
+        post_json(&client, "/json/deposit", r#"{"amount": 5}"#).0,
+        Status::Ok
+    );
     assert_eq!(balance(&client), "5.00");
 }
 
@@ -263,7 +310,10 @@ fn websocket_requires_login() {
         .header(rocket::http::Header::new("Connection", "Upgrade"))
         .header(rocket::http::Header::new("Upgrade", "websocket"))
         .header(rocket::http::Header::new("Sec-WebSocket-Version", "13"))
-        .header(rocket::http::Header::new("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="))
+        .header(rocket::http::Header::new(
+            "Sec-WebSocket-Key",
+            "dGhlIHNhbXBsZSBub25jZQ==",
+        ))
         .dispatch();
     assert_eq!(response.status(), Status::Unauthorized);
 }
