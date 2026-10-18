@@ -9,13 +9,15 @@
       html {
           font-family: "Verdana", san-serif;
       }
+      .flash { color: black; padding: 4px; background-color: tomato; }
+      .flash.success { background-color: palegreen; }
     </style>
   </head>
   <body>
     <h1>🏦 Best Bank 🏦</h1>
     <h2>Please Login</h2>
     {{#if flash}}
-    <p style="color:black; background-color: tomato;">{{ flash }}</p>
+    <p class="flash {{ flash_kind }}">{{ flash }}</p>
     {{/if}}
 
     <form action="/login" method="post" accept-charset="utf-8">

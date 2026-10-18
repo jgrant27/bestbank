@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use rocket::http::{Cookie, CookieJar, Status};
+use rocket::http::{Cookie, CookieJar, SameSite, Status};
 use rocket::outcome::IntoOutcome;
 use rocket::request::{self, FlashMessage, FromRequest, Request};
 use rocket::response::{Flash, Redirect};
@@ -62,7 +62,14 @@ pub fn login(
         .get(&login.username)
         .cloned();
     if stored_hash.is_some_and(|hash| crate::hashing::verify_password(&login.password, &hash)) {
-        jar.add_private(Cookie::new(SESSION_COOKIE, login.username.clone()));
+        // SameSite=Strict stops browsers sending the session cookie on
+        // cross-site requests, which is the CSRF protection for our POST
+        // routes. HttpOnly keeps it away from page scripts.
+        jar.add_private(
+            Cookie::build((SESSION_COOKIE, login.username.clone()))
+                .http_only(true)
+                .same_site(SameSite::Strict),
+        );
         Ok(Redirect::to(uri!(crate::banking::user_banking)))
     } else {
         Err(Box::new(Flash::error(
@@ -78,13 +85,12 @@ pub fn login_user(_user: User) -> Redirect {
 }
 
 #[get("/login", rank = 1)]
-pub fn login_page(_flash: Option<FlashMessage>) -> Template {
-    let context: HashMap<String, String> = HashMap::new();
-
-    // if let Some(ref msg) = flash {
-    //     context.insert("flash", msg.msg());
-    // }
-
+pub fn login_page(flash: Option<FlashMessage<'_>>) -> Template {
+    let mut context: HashMap<&str, &str> = HashMap::new();
+    if let Some(ref flash) = flash {
+        context.insert("flash", flash.message());
+        context.insert("flash_kind", flash.kind());
+    }
     Template::render("login", &context)
 }
 
