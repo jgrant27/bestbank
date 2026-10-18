@@ -4,17 +4,23 @@
 A small [Rocket](https://rocket.rs) 0.5 web app in [Rust](https://www.rust-lang.org)
 that demonstrates:
 
-- Login / logout with an **encrypted, authenticated session cookie** (Rocket
-  private cookies, `HttpOnly`, `SameSite=Strict`) and Argon2id password hashes.
+- Login / logout with **server-side sessions**: a random token in an
+  encrypted private cookie (`HttpOnly`, `SameSite=Strict`), stored hashed in
+  the database with absolute and idle expiry, rotated on login, revoked on
+  logout, plus "log out everywhere". Argon2id password hashes.
 - Request guards, request ranking, managed state and flash messages.
-- In-memory application storage (lost on restart) behind a poison-tolerant
-  `Mutex`, with money stored as integer cents.
-- Handlebars templates populated from JSON endpoints.
+- SQLite persistence via [`sqlx`](https://github.com/launchbadge/sqlx) with
+  embedded migrations, with money stored as integer cents and atomic,
+  overdraft-safe withdrawals.
+- [MiniJinja 2](https://docs.rs/minijinja) templates (`templates/*.html.j2`
+  with a shared `base` layout, autoescaped; printing a variable the handler
+  didn't pass is a render error), with the account page kept up to date from
+  JSON endpoints.
 - Authenticated, per-user WebSocket notifications (`rocket_ws`) on the same
   port as the app.
 
-> **This is a demo, not a real bank.** It has a hard-coded demo account, no
-> persistence, no rate limiting and no user registration. See
+> **This is a demo, not a real bank.** It ships with a hard-coded demo
+> account. See
 > [Security notes](#security-notes).
 
 ### Install Rust
@@ -30,6 +36,17 @@ cargo run
 Then open <http://localhost:8080>. The debug profile listens on port 8080 and
 generates a throwaway secret key on each start (so sessions don't survive a
 restart).
+
+### Database
+
+Data is stored in SQLite at `bestbank.db` in the working directory (see
+`database_url` in `Rocket.toml`). Migrations in `migrations/` are compiled
+into the binary and applied on startup. Delete the file to start over, or run
+with a throwaway in-memory database:
+
+```
+ROCKET_DATABASE_URL=sqlite::memory: cargo run
+```
 
 ### Run it behind TLS
 
@@ -50,9 +67,53 @@ Configuration lives in `Rocket.toml` (`[default]`, `[debug]`, `[release]`,
 `[release.tls]`); any value can be overridden with `ROCKET_*` environment
 variables.
 
-### Log in
+### Run it in Docker
 
-A single demo account is seeded at startup: **admin / admin**.
+```
+export ROCKET_SECRET_KEY="$(openssl rand -base64 32)"   # or put it in .env
+docker compose up --build
+```
+
+Then open http://localhost:8000. The image is a multi-stage build: compiled
+in `rust:slim`, shipped on distroless `cc-debian13` (about 40 MB, no shell),
+running as the unprivileged `nonroot` user with the `container` profile from
+`Rocket.toml` (plain HTTP on port 8000, database at `/data/bestbank.db`).
+
+- **No secret key is baked in.** Compose won't start without
+  `ROCKET_SECRET_KEY`, and the container exits if it's missing. Keep the same
+  key across restarts, or existing sessions stop working.
+- The database lives on the `bestbank-data` volume, so it survives restarts
+  and rebuilds (`docker compose down -v` deletes it).
+- Compose runs the container with a read-only root filesystem, all
+  capabilities dropped and `no-new-privileges`, and publishes the port on
+  127.0.0.1 only.
+- `GET /healthz` returns `ok` when the app and database are up. The image's
+  `HEALTHCHECK` runs `bestbank healthcheck`, which probes it.
+- It serves plain HTTP: put a TLS-terminating reverse proxy in front of it
+  (then set `ROCKET_IP_HEADER` and `ROCKET_ALLOWED_ORIGINS`, see the comments
+  in `docker-compose.yml`). If you mount a certificate and set `ROCKET_TLS`
+  instead, the health check only tests that the port accepts connections.
+
+Without Compose:
+
+```
+docker build -t bestbank .
+docker run --rm -p 127.0.0.1:8000:8000 -v bestbank-data:/data \
+    -e ROCKET_SECRET_KEY="$(openssl rand -base64 32)" bestbank
+```
+
+### Log in / register
+
+A demo account is seeded at startup: **admin / admin** (disable with
+`seed_demo_admin = false`). New users can sign up at `/register`:
+
+- usernames are 3-32 characters from `A-Z a-z 0-9 _ . -` and unique
+  regardless of case;
+- passwords must be 8-128 characters, must not be a very common password and
+  must not contain the username.
+
+Set `allow_registration = false` in `Rocket.toml` (or
+`ROCKET_ALLOW_REGISTRATION=false`) to turn sign-ups off.
 
 ### Endpoints
 
@@ -60,44 +121,169 @@ A single demo account is seeded at startup: **admin / admin**.
 |--------|----------------------|-------|-------------------------------------------|
 | GET    | `/`, `/login`        | –     | Login page (with flash messages)          |
 | POST   | `/login`             | –     | Form: `username`, `password`              |
-| POST   | `/logout`            | –     | Clears the session                        |
+| POST   | `/logout`            | –     | Deletes this session (server side)        |
+| POST   | `/logout_all`        | user  | Revokes all of the user's sessions        |
+| GET    | `/register`          | –     | Sign-up form                              |
+| POST   | `/register`          | –     | Form: `username`, `password`, `confirm`   |
 | GET    | `/user_banking`      | user  | Banking page (redirects to login if not)  |
 | GET    | `/json/account_info` | user  | Balance and history, newest first         |
-| POST   | `/json/deposit`      | user  | JSON `{"amount": 12.34}`                  |
-| POST   | `/json/withdraw`     | user  | JSON `{"amount": 12.34}`                  |
+| POST   | `/json/deposit`      | user  | JSON `{"amount": 12.34}` + `X-CSRF-Token` |
+| POST   | `/json/withdraw`     | user  | JSON `{"amount": 12.34}` + `X-CSRF-Token` |
+| POST   | `/json/transfer`     | user  | JSON `{"to": "bob", "amount": 12.34}` + `X-CSRF-Token` |
 | GET    | `/ws`                | user  | WebSocket: your own transaction events    |
-| GET    | `/dump`              | admin | Debug dump of storage                     |
-| GET    | `/static/*`          | –     | Static files (favicon)                    |
+| GET    | `/json/csrf`         | –     | Current CSRF token (for API clients)      |
+| GET    | `/healthz`           | –     | `ok` if the app and database are up (else 503) |
+| GET    | `/dump`              | admin | Users, balances, transaction counts (JSON) |
+| GET    | `/static/*`          | –     | Static files (favicon, CSS, JS)           |
 
 Amounts must be positive, have at most two decimal places and be at most
-1,000,000.00 per transaction; withdrawals can't overdraw. Invalid requests get
-a 4xx status with `{"success": false, "message": "..."}`. Unauthenticated API
+1,000,000.00 per transaction; withdrawals and transfers can't overdraw. Invalid requests get
+a 4xx status with `{"success": false, "message": "..."}` (403 for a missing
+or wrong CSRF token or a cross-origin request). All form POSTs need the
+`csrf_token` field. Unauthenticated API
 requests get `401`.
 
-### Tests
+Transfers move money to another user (recipient matched case-insensitively,
+not yourself). The debit and the credit are written in one `BEGIN IMMEDIATE`
+transaction, so a transfer either fully happens or not at all, and concurrent
+transfers can't overdraw. Each side's history entry has a `kind`
+(`deposit`, `withdrawal`, `transfer_out`, `transfer_in`) and, for transfers,
+the other party's `counterparty` username. Both users get a WebSocket event.
+Note that "No such recipient." tells the sender whether a username exists;
+that's inherent to a transfer-by-username feature.
+
+### Logging
+
+Logs are structured [`tracing`](https://docs.rs/tracing) events (Rocket's own
+log output is routed through the same subscriber). Each request gets an ID,
+which is returned in the `X-Request-Id` response header and included in that
+request's log lines; a well-formed incoming `X-Request-Id` (e.g. from a proxy)
+is reused. Logins, failed logins, logouts and transactions are logged with
+structured fields.
 
 ```
-cargo test
-cargo clippy --all-targets
+RUST_LOG=debug cargo run                 # more verbose
+BESTBANK_LOG_FORMAT=json cargo run       # one JSON object per line
 ```
+
+### Tests and checks
+
+```
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings   # pedantic lints are on in main.rs
+cargo test
+cargo deny check                            # cargo install --locked cargo-deny
+```
+
+CI (`.github/workflows/ci.yml`) runs all of these on every pull request and
+push to `master`, plus a release build and a Docker build with a smoke test
+(no-key refusal, health check, pages served). `deny.toml` fails the build on
+RustSec advisories, non-permissive licenses, unknown sources and OpenSSL.
+Dependabot (`.github/dependabot.yml`) proposes weekly Cargo, GitHub Actions
+and Docker base-image updates.
+
+Known advisories: Rocket 0.5.1 (the latest release) pins old hyper/rustls.
+HTTP/2 is disabled so the vulnerable `h2` isn't compiled in. The remaining
+rustls/webpki advisories affect TLS clients and certificate verification,
+which this server never does; they're ignored in `deny.toml` with reasons.
+
+### Coverage
+
+```
+rustup component add llvm-tools-preview
+cargo install --locked cargo-llvm-cov
+cargo llvm-cov --ignore-filename-regex 'src/(tests[a-z_]*|main)\.rs'          # summary
+cargo llvm-cov --ignore-filename-regex 'src/(tests[a-z_]*|main)\.rs' --html   # target/llvm-cov/html
+```
+
+Current numbers (stable Rust, 105 tests): **lines 99.55%** (7 of 1543
+missed), **regions 99.45%** (12 of 2188), functions 97.63%. CI fails if
+lines drop below 99.5%, regions below 99.4% or functions below 97.5%.
+
+Failure paths are tested by fault injection (`src/tests_faults.rs`):
+SQLite triggers that `RAISE(ABORT)` on a chosen insert/update/delete,
+renamed or dropped tables and columns, undecodable rows, a corrupted
+migration checksum, a second writer holding the lock, and a reader blocking
+`COMMIT`. Tests install a TRACE-level `tracing` subscriber so log fields are
+evaluated too.
+
+Deliberately excluded or left uncovered, and why:
+
+* `src/main.rs` (excluded): process entry only — argument dispatch, global
+  logger install, `launch()` and exit codes. Everything it calls
+  (`app::build`, `health::probe`, `telemetry::subscriber`) is tested
+  directly. `#[coverage(off)]` is still unstable, so exclusion is per file.
+* `src/tests*.rs` (excluded): the tests themselves.
+* `events.rs`, websocket `send` error (`?` region) and
+  `RecvError::Closed`: the first needs the client to vanish between the
+  session check and the write (a race); the second needs the broadcast
+  channel dropped, but the managed `Events` lives as long as the server.
+* `#[derive(FromForm)]` on `Login`, `CsrfOnly`, `Registration` and
+  `#[catch(429)]`: macro-generated closures/monomorphs (per-field error
+  builders, `into_info`) that Rocket only calls in combinations that don't
+  reach our code. Missing, duplicated, unknown and multipart fields are tested.
+* Field regions of four `tracing` events (`login.rs`, `register.rs`): with
+  the `log` feature (enabled by sqlx) `tracing` macros expand the fields
+  twice, once for the fallback that only runs when *no* subscriber is
+  installed; the events themselves are covered.
+* TLS-only code: none is left uncovered. The health probe's TLS mode (a
+  TCP connect only, since it has no TLS client) is tested directly, and the
+  TLS/container profiles are checked with `Config::tls_enabled()`.
+* Poison recovery and impossible failures: mutex poisoning is recovered with
+  `unwrap_or_else(PoisonError::into_inner)` and impossible errors (zero
+  timeouts, a panicked hashing task) use `.expect(..)`. Neither adds a
+  separate branch region, so nothing is excluded for them.
 
 ### Security notes
 
 What the demo does:
 
-- Session cookies are Rocket private cookies (AES-256-GCM with the app's
-  secret key), so they can't be forged or tampered with, and the user guard
-  checks the user still exists.
+- Sessions are server-side. The cookie (a Rocket private cookie, AES-256-GCM
+  with the app's secret key) carries only a random 256-bit token; the
+  database stores its SHA-256 with an absolute lifetime (`session_ttl_secs`,
+  default 8h) and idle timeout (`session_idle_secs`, default 30 min). Login
+  rotates the session, logout deletes it, `/logout_all` revokes every
+  session of the user, and open websockets close within
+  `session_check_secs` once their session ends.
 - Passwords are stored as salted Argon2id PHC strings.
-- `SameSite=Strict` on the session cookie is the CSRF defence for the POST
-  routes.
+- CSRF: every form carries a per-browser token (from an encrypted,
+  `HttpOnly`, `SameSite=Strict` `csrf` cookie, rotated on login and logout)
+  and the JSON API requires it in an `X-CSRF-Token` header (the page reads it
+  from `<meta name="csrf-token">`; API clients can `GET /json/csrf`). The
+  login form is covered too, so login CSRF is blocked. POSTs and the
+  websocket upgrade are also rejected when `Origin`/`Referer` names another
+  origin. Behind a proxy that rewrites `Host`, list the public origin(s) in
+  `allowed_origins`.
 - WebSocket connections require a logged-in session and only receive that
   user's events.
+- Every response carries a strict `Content-Security-Policy`
+  (`default-src 'none'`; scripts, styles, images and connections only from
+  the same origin; no `unsafe-inline`/`unsafe-eval`; `form-action 'self'`;
+  `frame-ancestors 'none'`). All JS and CSS live in `static/` (no inline
+  `<script>`, `<style>`, `style=` or `on*=` handlers; tests enforce this),
+  and the page builds the DOM with `textContent`, so values from the server
+  (usernames, messages) are never parsed as HTML. Notifications are toasts
+  instead of `alert()`.
+- Rocket's `Shield` adds `X-Frame-Options: DENY`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, a
+  `Permissions-Policy` that blocks camera/mic/geolocation/payment/USB, and
+  HSTS when TLS is enabled. Non-static responses are `Cache-Control: no-store`.
+
+- Brute-force protection: login and registration attempts are limited per
+  client IP (`login_rate_limit` per `rate_limit_window_secs`, default 10/min;
+  excess requests get `429` with `Retry-After`), and an account is locked for
+  `lockout_secs` (default 15 min) after `lockout_threshold` (default 5)
+  consecutive failed logins. Unknown usernames are checked against a dummy
+  Argon2 hash so timing doesn't reveal which accounts exist.
+- The client IP is the TCP peer address (`ip_header = false`), so the limit
+  can't be dodged by spoofing `X-Real-IP`. Behind a trusted reverse proxy, set
+  `ip_header = "X-Real-IP"` (or whatever header the proxy sets).
 
 What it doesn't do (fine for a demo, not for production):
 
 - The `admin`/`admin` account is hard-coded.
-- No login rate limiting or account lockout.
-- No CSRF tokens (relies on `SameSite`); login CSRF is not prevented.
-- Sessions have no server-side revocation; logout only deletes the cookie.
-- Everything is in memory and lost on restart.
+- Rate limits are in memory and per process (reset on restart, not shared
+  between instances).
+- The "account locked" message reveals that a username exists (a deliberate
+  UX trade-off, mitigated by the per-IP rate limit). Lockout can also be
+  abused to lock someone out for `lockout_secs`.

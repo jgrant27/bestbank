@@ -1,0 +1,135 @@
+# Formatting, lint, tests, a coverage gate, dependency policy (RustSec advisories, licenses,
+# bans, sources) and a Docker smoke test on every PR and on pushes to master.
+# Third-party actions are pinned to commit SHAs; Dependabot keeps them fresh.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy (pedantic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo test --locked
+      - name: Release build
+        run: cargo build --release --locked
+
+  coverage:
+    name: coverage gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # App logic only: the tests and main.rs (process entry glue) are
+      # excluded; README "Coverage" lists what remains uncovered and why.
+      - name: Measure and enforce coverage
+        run: >-
+          cargo llvm-cov --locked
+          --ignore-filename-regex 'src/(tests[a-z_]*|main)\.rs'
+          --fail-under-lines 99.5 --fail-under-regions 99.4
+          --fail-under-functions 97.5
+
+  deny:
+    name: cargo-deny (${{ matrix.checks }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checks: [advisories, "bans licenses sources"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check ${{ matrix.checks }}
+
+  docker:
+    name: docker build + smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build image
+        run: docker build -t bestbank:ci .
+      - name: Refuses to start without a secret key
+        run: |
+          if docker run --rm bestbank:ci; then
+            echo "container started without ROCKET_SECRET_KEY" >&2
+            exit 1
+          fi
+      - name: Starts, becomes healthy and serves the app
+        run: |
+          docker run -d --name bb -p 127.0.0.1:8000:8000 --read-only --tmpfs /tmp \
+            --cap-drop ALL -e ROCKET_SECRET_KEY="$(openssl rand -base64 32)" bestbank:ci
+          for _ in $(seq 1 30); do
+            if docker exec bb /app/bestbank healthcheck; then break; fi
+            sleep 1
+          done
+          docker exec bb /app/bestbank healthcheck
+          test "$(curl -fsS http://127.0.0.1:8000/healthz)" = ok
+          curl -fsS -o /dev/null http://127.0.0.1:8000/login
+          curl -fsS -o /dev/null http://127.0.0.1:8000/static/banking.js
+      - name: Container logs
+        if: always()
+        run: docker logs bb || true

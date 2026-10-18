@@ -1,0 +1,12 @@
+# Keep the build context small and free of local state and secrets.
+target/
+.git/
+*.db
+*.db-shm
+*.db-wal
+private/
+img/
+.env
+.dockerignore
+Dockerfile
+docker-compose.yml

@@ -7,71 +7,67 @@ extern crate rocket;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_faults;
+#[cfg(test)]
+mod tests_ws;
 
+mod app;
 mod banking;
+mod csrf;
+mod db;
 mod events;
 mod hashing;
+mod headers;
+mod health;
 mod login;
 mod money;
-mod storage;
+mod ratelimit;
+mod register;
+mod sessions;
+mod telemetry;
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::process::ExitCode;
 
-use rocket::fs::{FileServer, relative};
-use rocket::http::Status;
-use rocket::{Build, Rocket, State};
-use rocket_dyn_templates::Template;
+use app::build;
 
-use storage::{SharedStorage, Storage};
-
-/// Debug dump of all storage. Admin only.
-#[get("/dump")]
-fn dump(state: &State<SharedStorage>, user: login::User) -> Result<String, Status> {
-    if user.name == "admin" {
-        Ok(format!("{:?}", *storage::lock(state)))
-    } else {
-        Err(Status::Forbidden)
+// Process entry point: argument handling, environment-driven logging setup
+// and launching. Everything here is thin glue around tested functions and is
+// excluded from coverage (see README "Coverage").
+#[rocket::main]
+async fn main() -> ExitCode {
+    match std::env::args().nth(1).as_deref() {
+        None => {}
+        // `bestbank healthcheck`: probe a running server (used by the
+        // container HEALTHCHECK; the runtime image has no curl or shell).
+        Some("healthcheck") => {
+            return match rocket::Config::try_from(rocket::Config::figment()) {
+                Ok(config) => health::probe(&config),
+                Err(e) => {
+                    eprintln!("unhealthy: invalid configuration: {e}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Some(other) => {
+            eprintln!("unknown argument {other:?}\nusage: bestbank [healthcheck]");
+            return ExitCode::from(2);
+        }
     }
-}
-
-/// Seed the in-memory store with the demo `admin`/`admin` account.
-fn demo_storage() -> Storage {
-    Storage {
-        credentials: HashMap::from([(String::from("admin"), hashing::hash_password("admin"))]),
-        transactions: HashMap::from([(String::from("admin"), Vec::new())]),
+    let rust_log = std::env::var("RUST_LOG").ok();
+    let json = std::env::var("BESTBANK_LOG_FORMAT").is_ok_and(|v| v.eq_ignore_ascii_case("json"));
+    let ansi = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let subscriber = telemetry::subscriber(rust_log.as_deref(), json, ansi);
+    // Also captures Rocket's `log` records (Rocket only installs its own
+    // logger when none is set).
+    if tracing_subscriber::util::SubscriberInitExt::try_init(subscriber).is_err() {
+        eprintln!("a global logger was already installed");
     }
-}
-
-/// Build the Rocket instance around the given storage.
-fn build(storage: Storage) -> Rocket<Build> {
-    rocket::build()
-        .attach(Template::fairing())
-        .mount(
-            "/",
-            routes![
-                login::index,
-                login::login,
-                login::logout,
-                login::login_user,
-                login::login_page,
-                banking::user_banking,
-                banking::user_banking_login,
-                banking::account_info,
-                banking::withdraw,
-                banking::deposit,
-                events::ws,
-                dump,
-            ],
-        )
-        // Static assets (favicon). Mounted under /static so its 404s don't
-        // mask the 401s from guarded routes.
-        .mount("/static", FileServer::from(relative!("static")))
-        .manage(Mutex::new(storage))
-        .manage(events::Events::default())
-}
-
-#[launch]
-fn rocket() -> _ {
-    build(demo_storage())
+    match build(rocket::Config::figment()).launch().await {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::error!("{}", e.pretty_print());
+            ExitCode::FAILURE
+        }
+    }
 }

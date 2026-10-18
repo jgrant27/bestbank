@@ -1,0 +1,28 @@
+{% extends "base" %}
+{% block subtitle %} · Register{% endblock %}
+{% block body %}
+    <h2>Create an account</h2>
+    {% include "_flash" %}
+
+    <form action="/register" method="post" accept-charset="utf-8">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <p>
+        <label for="username">username</label>
+        <input type="text" name="username" id="username" value=""
+               minlength="3" maxlength="32" pattern="[A-Za-z0-9_.\-]+" required />
+        <span class="hint">3-32 letters, digits, _ . -</span>
+      </p>
+      <p>
+        <label for="password">password</label>
+        <input type="password" name="password" id="password" value=""
+               minlength="8" maxlength="128" required />
+        <span class="hint">at least 8 characters, not a common password, not containing your username</span>
+      </p>
+      <p>
+        <label for="confirm">confirm password</label>
+        <input type="password" name="confirm" id="confirm" value="" required />
+      </p>
+      <p><input type="submit" value="register"></p>
+    </form>
+    <p>Already have an account? <a href="/login">Log in</a></p>
+{% endblock %}

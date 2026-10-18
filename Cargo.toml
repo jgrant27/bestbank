@@ -1,16 +1,26 @@
 [package]
 name = "bestbank"
 version = "0.7.0"
+publish = false
 authors = ["jgrant"]
 edition = "2024"
 
 [dependencies]
 argon2 = "0.6"
 chrono = "0.4"
-rocket = { version = "0.5.1", features = ["json", "secrets", "tls"] }
-rocket_dyn_templates = { version = "0.2.0", features = ["handlebars"] }
+getrandom = "0.4"
+# HTTP/2 is off: Rocket 0.5 pins h2 0.3, which has an unfixed DoS advisory
+# (RUSTSEC-2026-0258). HTTP/1.1 is plenty for this demo.
+rocket = { version = "0.5.1", default-features = false, features = ["json", "secrets", "tls"] }
+rocket_dyn_templates = { version = "0.2.0", features = ["minijinja"] }
+# Same major version rocket_dyn_templates uses; only needed to configure the engine.
+minijinja = "2"
 rocket_ws = "0.1.1"
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.11"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Argon2 is intentionally expensive; optimise it even in debug/test builds so
 # logins (and the test suite) stay fast.
@@ -18,3 +28,7 @@ serde = { version = "1", features = ["derive"] }
 opt-level = 3
 [profile.dev.package.blake2]
 opt-level = 3
+
+[dev-dependencies]
+tempfile = "3"
+tokio-tungstenite = "0.21"

@@ -1,0 +1,17 @@
+{% extends "base" %}
+{% block body %}
+    <h2>Please Login</h2>
+    {% include "_flash" %}
+
+    <form action="/login" method="post" accept-charset="utf-8">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <label for="username">username</label>
+      <input type="text" name="username" id="username" value="" />
+      <label for="password">password</label>
+      <input type="password" name="password" id="password" value="" />
+      <p><input type="submit" value="login"></p>
+    </form>
+    {%- if allow_registration %}
+    <p>New here? <a href="/register">Create an account</a></p>
+    {%- endif %}
+{% endblock %}

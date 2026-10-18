@@ -4,9 +4,43 @@
 
 [default]
 address = "0.0.0.0"
+# SQLite database (created on first start; migrations run automatically).
+# Override with ROCKET_DATABASE_URL, e.g. "sqlite::memory:" for a throwaway DB.
+database_url = "sqlite://bestbank.db"
+# Seed the demo admin/admin account when it doesn't exist.
+seed_demo_admin = true
+# Allow sign-ups at /register.
+allow_registration = true
+# Server-side sessions: absolute lifetime, idle timeout, and how often open
+# websockets re-check that their session is still live (all in seconds).
+session_ttl_secs = 28800
+session_idle_secs = 1800
+session_check_secs = 15
+# Brute-force protection: at most `login_rate_limit` login (and, separately,
+# registration) attempts per client IP per window (0 = off), and lock an
+# account for `lockout_secs` after `lockout_threshold` consecutive failures.
+login_rate_limit = 10
+rate_limit_window_secs = 60
+lockout_threshold = 5
+lockout_secs = 900
+# Use the TCP peer address as the client IP. Don't trust X-Real-IP unless the
+# app runs behind a reverse proxy that sets it (then: ip_header = "X-Real-IP").
+ip_header = false
+# Origins allowed to POST (CSRF Origin/Referer check). Empty = must match the
+# request's Host header. Set when a proxy rewrites Host, e.g.
+#   allowed_origins = ["https://bank.example"]
+allowed_origins = []
 
 [debug]
 port = 8080
+
+# Used by the Docker image (ROCKET_PROFILE=container; see Dockerfile and
+# docker-compose.yml). Plain HTTP on 8000 (terminate TLS in a reverse proxy,
+# or mount a cert and set ROCKET_TLS), database on the /data volume. Like any
+# non-debug profile it refuses to start without ROCKET_SECRET_KEY.
+[container]
+port = 8000
+database_url = "sqlite:///data/bestbank.db"
 
 [release]
 port = 8443

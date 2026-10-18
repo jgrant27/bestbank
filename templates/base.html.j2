@@ -1,0 +1,18 @@
+{#- Shared page layout. Pages extend "base" and fill in the blocks.
+    Autoescaping is on for all .html.j2 templates. No inline scripts or
+    styles: the Content-Security-Policy forbids them. -#}
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>🏦 Best Bank 🏦{% block subtitle %}{% endblock %}</title>
+    <link rel="icon" href="/static/favicon.ico" />
+    <link rel="stylesheet" href="/static/style.css" />
+    {%- block head %}{% endblock %}
+  </head>
+  <body>
+    <h1>🏦 Best Bank 🏦</h1>
+    {%- block body %}{% endblock %}
+  </body>
+</html>

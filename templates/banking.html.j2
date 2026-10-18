@@ -1,0 +1,51 @@
+{% extends "base" %}
+{% block head %}
+    <meta name="csrf-token" content="{{ csrf_token }}" />
+    <script src="/static/banking.js" defer></script>
+{%- endblock %}
+{% block body %}
+    <div id="toasts" aria-live="polite"></div>
+    <h2>
+      Welcome to your account <b><i><span id="name">{{ user_name }}</span></i></b>.
+      <form class="inline" action="/logout" method="post" accept-charset="utf-8">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <input type="submit" id="logout" value="logout" />
+      </form>
+      <form class="inline" action="/logout_all" method="post" accept-charset="utf-8">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+        <input type="submit" id="logout_all" value="log out everywhere" />
+      </form>
+    </h2>
+    <table class="layout">
+      <tr>
+        <td class="balance" colspan="2">
+          <p>Balance: 💵 <span id="balance">{{ balance }}</span></p>
+        </td>
+      </tr>
+      <tr>
+        <td class="history">
+          <p>Transaction History</p>
+          <div id="transactions"></div>
+        </td>
+        <td class="actions">
+          <p>What would you like to do ?</p>
+          <p>
+            <label for="transaction_amount">💵</label>
+            <input type="number" id="transaction_amount"
+                   min="0.01" step="0.01" max="1000000"
+                   placeholder="0.00" />
+          </p>
+          <p>
+            <button type="button" id="withdraw" data-action="withdraw">withdraw</button>
+            <button type="button" id="deposit" data-action="deposit">deposit</button>
+          </p>
+          <p>
+            <label for="transfer_to">to</label>
+            <input type="text" id="transfer_to" placeholder="recipient username"
+                   maxlength="32" autocomplete="off" />
+            <button type="button" id="transfer" data-action="transfer">transfer</button>
+          </p>
+        </td>
+      </tr>
+    </table>
+{%- endblock %}

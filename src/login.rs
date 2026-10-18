@@ -1,103 +1,289 @@
-use std::collections::HashMap;
-use std::sync::Mutex;
-
+use rocket::State;
+use rocket::form::Form;
 use rocket::http::{Cookie, CookieJar, SameSite, Status};
 use rocket::outcome::IntoOutcome;
 use rocket::request::{self, FlashMessage, FromRequest, Request};
 use rocket::response::{Flash, Redirect};
-use rocket::State;
-use rocket::form::Form;
 
-use rocket_dyn_templates::Template;
+use rocket_dyn_templates::{Template, context};
 
+use crate::db::{self, AppConfig, Db};
+use crate::telemetry::RequestId;
 
-use crate::storage::Storage;
+use crate::csrf::{self, CsrfForm, CsrfToken};
+use crate::ratelimit::LoginAttempt;
+use crate::sessions;
+pub use crate::sessions::SESSION_COOKIE;
 
-/// Name of the (private, encrypted) session cookie.
-pub const SESSION_COOKIE: &str = "user_name";
+pub const LOCKED_MESSAGE: &str =
+    "This account is temporarily locked after too many failed logins. Please try again later.";
 
 #[derive(FromForm)]
 pub struct Login {
     pub username: String,
     pub password: String,
+    /// Missing -> empty, which fails verification (not a 422).
+    #[field(default = String::new())]
+    pub csrf_token: String,
 }
 
+/// Body of forms that carry nothing but the CSRF token (logout buttons).
+#[derive(FromForm)]
+pub struct CsrfOnly {
+    /// Missing -> empty, which fails verification (not a 422).
+    #[field(default = String::new())]
+    pub csrf_token: String,
+}
+
+/// A logged-in user, authenticated via a live server-side session.
 #[derive(Debug)]
 pub struct User {
+    pub id: i64,
     pub name: String,
+    /// Server-side session id (SHA-256 of the cookie token).
+    pub session_id: String,
 }
 
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for User {
-    type Error = std::convert::Infallible;
+    type Error = ();
 
     async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
-        // The session cookie is a Rocket *private* cookie: it is encrypted and
-        // authenticated with the app's secret key, so a client cannot forge or
-        // tamper with it. We additionally check that the user still exists.
-        let name = request
+        // The session cookie is a Rocket *private* cookie (encrypted and
+        // authenticated with the secret key) holding a random token; the
+        // token must match a live, unexpired server-side session.
+        let Some(token) = request
             .cookies()
             .get_private(SESSION_COOKIE)
-            .map(|cookie| cookie.value().to_owned());
-        let exists = match (&name, request.rocket().state::<Mutex<Storage>>()) {
-            (Some(name), Some(state)) => crate::storage::lock(state).credentials.contains_key(name),
-            _ => false,
+            .map(|cookie| cookie.value().to_owned())
+        else {
+            return request::Outcome::Forward(Status::Unauthorized);
         };
-        name.filter(|_| exists)
-            .map(|name| User { name })
-            .or_forward(Status::Unauthorized)
+        let (Some(db), Some(config)) = (
+            request.rocket().state::<Db>(),
+            request.rocket().state::<AppConfig>(),
+        ) else {
+            return request::Outcome::Forward(Status::InternalServerError);
+        };
+        match sessions::authenticate(db, config, &token).await {
+            Ok(session) => session
+                .map(|s| User {
+                    id: s.user_id,
+                    name: s.username,
+                    session_id: s.session_id,
+                })
+                .or_forward(Status::Unauthorized),
+            Err(e) => {
+                tracing::error!(error = %e, "session lookup failed");
+                request::Outcome::Error((Status::InternalServerError, ()))
+            }
+        }
     }
+}
+
+fn session_cookie(token: String, config: &AppConfig) -> Cookie<'static> {
+    // SameSite=Strict stops browsers sending the session cookie on
+    // cross-site requests; HttpOnly keeps it away from page scripts.
+    Cookie::build((SESSION_COOKIE, token))
+        .http_only(true)
+        .same_site(SameSite::Strict)
+        .path("/")
+        .max_age(rocket::time::Duration::seconds(
+            i64::try_from(config.session_ttl_secs).unwrap_or(i64::MAX),
+        ))
+        .build()
+}
+
+fn form_expired() -> Box<Flash<Redirect>> {
+    Box::new(Flash::error(
+        Redirect::to(uri!(login_page)),
+        "This form has expired. Please try again.",
+    ))
+}
+
+fn something_went_wrong() -> Box<Flash<Redirect>> {
+    Box::new(Flash::error(
+        Redirect::to(uri!(login_page)),
+        "Something went wrong, please try again.",
+    ))
 }
 
 #[post("/login", data = "<login>")]
-pub fn login(
-    state: &State<Mutex<Storage>>,
+pub async fn login(
+    db: &State<Db>,
+    config: &State<AppConfig>,
     jar: &CookieJar<'_>,
+    _attempt: LoginAttempt,
+    csrf: CsrfForm,
     login: Form<Login>,
+    request_id: RequestId,
 ) -> Result<Redirect, Box<Flash<Redirect>>> {
-    // Copy the stored hash out so the (deliberately slow) Argon2 check
-    // runs without holding the storage lock.
-    let stored_hash = crate::storage::lock(state)
-        .credentials
-        .get(&login.username)
-        .cloned();
-    if stored_hash.is_some_and(|hash| crate::hashing::verify_password(&login.password, &hash)) {
-        // SameSite=Strict stops browsers sending the session cookie on
-        // cross-site requests, which is the CSRF protection for our POST
-        // routes. HttpOnly keeps it away from page scripts.
-        jar.add_private(
-            Cookie::build((SESSION_COOKIE, login.username.clone()))
-                .http_only(true)
-                .same_site(SameSite::Strict),
-        );
-        Ok(Redirect::to(uri!(crate::banking::user_banking)))
-    } else {
-        Err(Box::new(Flash::error(
+    if !csrf.verify(&login.csrf_token) {
+        tracing::warn!(request_id = %request_id.0, "login rejected: bad CSRF token");
+        return Err(form_expired());
+    }
+    let invalid = || {
+        Box::new(Flash::error(
             Redirect::to(uri!(login_page)),
             "Invalid username/password.",
-        )))
+        ))
+    };
+    let user = db::find_user(db, &login.username).await.map_err(|e| {
+        tracing::error!(request_id = %request_id.0, error = %e, "user lookup failed");
+        something_went_wrong()
+    })?;
+    if user.as_ref().is_some_and(db::UserRow::is_locked) {
+        tracing::warn!(request_id = %request_id.0, username = ?login.username, "login refused: account locked");
+        return Err(Box::new(Flash::error(
+            Redirect::to(uri!(login_page)),
+            LOCKED_MESSAGE,
+        )));
     }
+    // Argon2 is deliberately slow; keep it off the async executor. Unknown
+    // users are checked against a dummy hash so response timing doesn't
+    // reveal which usernames exist.
+    let password = login.password.clone();
+    let hash = user.as_ref().map(|u| u.password_hash.clone());
+    let verified = rocket::tokio::task::spawn_blocking(move || {
+        if let Some(hash) = hash {
+            crate::hashing::verify_password(&password, &hash)
+        } else {
+            crate::hashing::verify_password(&password, crate::hashing::dummy_hash());
+            false
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    let Some(user) = user else {
+        tracing::warn!(request_id = %request_id.0, username = ?login.username, "login failed: unknown user");
+        return Err(invalid());
+    };
+    if !verified {
+        let locked = db::record_failed_login(db, user.id, config.lockout_threshold, config.lockout_secs)
+            .await
+            .map_err(|e| {
+                tracing::error!(request_id = %request_id.0, error = %e, "recording failed login failed");
+                something_went_wrong()
+            })?;
+        tracing::warn!(request_id = %request_id.0, username = ?user.username, locked, "login failed: bad password");
+        if locked {
+            return Err(Box::new(Flash::error(
+                Redirect::to(uri!(login_page)),
+                LOCKED_MESSAGE,
+            )));
+        }
+        return Err(invalid());
+    }
+
+    db::record_successful_login(db, user.id).await.map_err(|e| {
+        tracing::error!(request_id = %request_id.0, error = %e, "resetting login failures failed");
+        something_went_wrong()
+    })?;
+    // Always issue a fresh session (rotation), revoking any previous one
+    // presented by this browser.
+    let previous = jar
+        .get_private(SESSION_COOKIE)
+        .map(|c| c.value().to_owned());
+    let session = sessions::create(db, config, user.id, previous.as_deref())
+        .await
+        .map_err(|e| {
+            tracing::error!(request_id = %request_id.0, error = %e, "session creation failed");
+            something_went_wrong()
+        })?;
+    jar.add_private(session_cookie(session.token, config));
+    csrf::rotate(jar);
+    // Debug-format user input so control characters can't forge log lines.
+    tracing::info!(request_id = %request_id.0, username = ?user.username, "login succeeded");
+    Ok(Redirect::to(uri!(crate::banking::user_banking)))
 }
 
+/// Already logged in: go to the account page.
 #[get("/login")]
 pub fn login_user(_user: User) -> Redirect {
-    Redirect::to(uri!(login_page))
+    Redirect::to(uri!(crate::banking::user_banking))
 }
 
 #[get("/login", rank = 1)]
-pub fn login_page(flash: Option<FlashMessage<'_>>) -> Template {
-    let mut context: HashMap<&str, &str> = HashMap::new();
-    if let Some(ref flash) = flash {
-        context.insert("flash", flash.message());
-        context.insert("flash_kind", flash.kind());
-    }
-    Template::render("login", &context)
+pub fn login_page(
+    config: &State<AppConfig>,
+    csrf: CsrfToken,
+    flash: Option<FlashMessage<'_>>,
+) -> Template {
+    Template::render(
+        "login",
+        context! {
+            csrf_token: csrf.0,
+            allow_registration: config.allow_registration,
+            flash: flash.as_ref().map(FlashMessage::message),
+            flash_kind: flash.as_ref().map(FlashMessage::kind),
+        },
+    )
 }
 
-#[post("/logout")]
-pub fn logout(jar: &CookieJar<'_>) -> Flash<Redirect> {
-    jar.remove_private(Cookie::from(SESSION_COOKIE));
-    Flash::success(Redirect::to(uri!(login_page)), "Successfully logged out.")
+/// Log out: delete this browser's server-side session and its cookie.
+#[post("/logout", data = "<form>")]
+pub async fn logout(
+    db: &State<Db>,
+    jar: &CookieJar<'_>,
+    csrf: CsrfForm,
+    form: Form<CsrfOnly>,
+    request_id: RequestId,
+) -> Result<Flash<Redirect>, Status> {
+    if !csrf.verify(&form.csrf_token) {
+        tracing::warn!(request_id = %request_id.0, "logout rejected: bad CSRF token");
+        return Err(Status::Forbidden);
+    }
+    if let Some(cookie) = jar.get_private(SESSION_COOKIE) {
+        match sessions::delete(db, cookie.value()).await {
+            Ok(()) => tracing::info!(request_id = %request_id.0, "logout"),
+            Err(e) => {
+                tracing::error!(request_id = %request_id.0, error = %e, "session delete failed");
+            }
+        }
+    }
+    jar.remove_private(Cookie::build(SESSION_COOKIE).path("/"));
+    csrf::rotate(jar);
+    Ok(Flash::success(
+        Redirect::to(uri!(login_page)),
+        "Successfully logged out.",
+    ))
+}
+
+/// Log out everywhere: revoke every session belonging to this user.
+#[post("/logout_all", data = "<form>")]
+pub async fn logout_all(
+    db: &State<Db>,
+    jar: &CookieJar<'_>,
+    user: User,
+    csrf: CsrfForm,
+    form: Form<CsrfOnly>,
+    request_id: RequestId,
+) -> Result<Flash<Redirect>, Status> {
+    if !csrf.verify(&form.csrf_token) {
+        tracing::warn!(request_id = %request_id.0, "logout_all rejected: bad CSRF token");
+        return Err(Status::Forbidden);
+    }
+    match sessions::delete_all_for_user(db, user.id).await {
+        Ok(n) => {
+            tracing::info!(request_id = %request_id.0, username = ?user.name, sessions = n, "logged out everywhere");
+        }
+        Err(e) => {
+            tracing::error!(request_id = %request_id.0, error = %e, "session revocation failed");
+        }
+    }
+    jar.remove_private(Cookie::build(SESSION_COOKIE).path("/"));
+    csrf::rotate(jar);
+    Ok(Flash::success(
+        Redirect::to(uri!(login_page)),
+        "Logged out of all sessions.",
+    ))
+}
+
+/// `POST /logout_all` without a session: nothing to revoke.
+#[post("/logout_all", rank = 2)]
+pub fn logout_all_anonymous() -> Redirect {
+    Redirect::to(uri!(login_page))
 }
 
 #[get("/")]
