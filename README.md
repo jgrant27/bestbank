@@ -166,12 +166,26 @@ RUST_LOG=debug cargo run                 # more verbose
 BESTBANK_LOG_FORMAT=json cargo run       # one JSON object per line
 ```
 
-### Tests
+### Tests and checks
 
 ```
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings   # pedantic lints are on in main.rs
 cargo test
-cargo clippy --all-targets
+cargo deny check                            # cargo install --locked cargo-deny
 ```
+
+CI (`.github/workflows/ci.yml`) runs all of these on every pull request and
+push to `master`, plus a release build and a Docker build with a smoke test
+(no-key refusal, health check, pages served). `deny.toml` fails the build on
+RustSec advisories, non-permissive licenses, unknown sources and OpenSSL.
+Dependabot (`.github/dependabot.yml`) proposes weekly Cargo, GitHub Actions
+and Docker base-image updates.
+
+Known advisories: Rocket 0.5.1 (the latest release) pins old hyper/rustls.
+HTTP/2 is disabled so the vulnerable `h2` isn't compiled in. The remaining
+rustls/webpki advisories affect TLS clients and certificate verification,
+which this server never does; they're ignored in `deny.toml` with reasons.
 
 ### Security notes
 

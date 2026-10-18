@@ -1,6 +1,7 @@
 [package]
 name = "bestbank"
 version = "0.7.0"
+publish = false
 authors = ["jgrant"]
 edition = "2024"
 
@@ -8,7 +9,9 @@ edition = "2024"
 argon2 = "0.6"
 chrono = "0.4"
 getrandom = "0.4"
-rocket = { version = "0.5.1", features = ["json", "secrets", "tls"] }
+# HTTP/2 is off: Rocket 0.5 pins h2 0.3, which has an unfixed DoS advisory
+# (RUSTSEC-2026-0258). HTTP/1.1 is plenty for this demo.
+rocket = { version = "0.5.1", default-features = false, features = ["json", "secrets", "tls"] }
 rocket_dyn_templates = { version = "0.2.0", features = ["minijinja"] }
 # Same major version rocket_dyn_templates uses; only needed to configure the engine.
 minijinja = "2"

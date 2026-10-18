@@ -1,0 +1,75 @@
+# cargo-deny policy (https://embarkstudios.github.io/cargo-deny/).
+# Run locally with `cargo deny check`; CI runs it on every PR.
+
+[graph]
+# Only check what can actually be built for the platforms we run on.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+all-features = false
+
+[advisories]
+# Every RustSec advisory (vulnerable, unsound, unmaintained, yanked) fails
+# the check unless it's listed under `ignore` with a reason.
+#
+# Note on GHSA-cq8v-f236-94qc / RUSTSEC "rand is unsound with a custom
+# logger using rand::rng()" (Dependabot alert #42 on master): master's
+# lockfile pins rand 0.7.3. This branch resolves only patched versions
+# (rand 0.8.8, and rand 0.10.x >= 0.10.1 via sqlx), so nothing is ignored
+# here; the alert closes when these changes reach master.
+#
+# Rocket 0.5.1 (the latest release) pins hyper 0.14 / rustls 0.21 /
+# rustls-webpki 0.101, so the advisories below can't be fixed by updating.
+# HTTP/2 is disabled in Cargo.toml, which removes h2 and RUSTSEC-2026-0258.
+# The rest only affect TLS *clients* or *certificate verification*. This app
+# is only a TLS server (in the `release` profile; the container serves plain
+# HTTP) and doesn't verify client certificates (no `mtls` feature), so none
+# of that code runs. Revisit when Rocket moves to newer rustls.
+unmaintained = "workspace"
+yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2026-0346", reason = "rustls 0.21 via Rocket 0.5.1: Debug of client session values; we never act as a TLS client" },
+    { id = "RUSTSEC-2026-0349", reason = "rustls 0.21 via Rocket 0.5.1: ServerHello downgrade affects TLS clients only" },
+    { id = "RUSTSEC-2026-0098", reason = "rustls-webpki 0.101 via Rocket 0.5.1: certificate name constraints; we verify no peer certificates (no mTLS)" },
+    { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.101 via Rocket 0.5.1: wildcard name constraints; we verify no peer certificates (no mTLS)" },
+    { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.101 via Rocket 0.5.1: CRL parsing panic; we parse no CRLs (no mTLS)" },
+]
+
+[licenses]
+# Permissive licenses used by our dependency tree.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.93
+
+[licenses.private]
+# bestbank itself is not published to crates.io and has no license file.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+# Never pull in OpenSSL; TLS is rustls.
+deny = [
+    { crate = "openssl", reason = "use rustls" },
+    { crate = "openssl-sys", reason = "use rustls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
