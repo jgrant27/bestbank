@@ -37,6 +37,34 @@ pub struct AppConfig {
     /// How often open websockets re-check their session (seconds).
     #[serde(default = "default_session_check")]
     pub session_check_secs: u64,
+    /// Max login (and, separately, registration) attempts per client IP per
+    /// window. 0 disables rate limiting.
+    #[serde(default = "default_rate_limit")]
+    pub login_rate_limit: u32,
+    #[serde(default = "default_rate_window")]
+    pub rate_limit_window_secs: u64,
+    /// Lock an account after this many consecutive failed logins (0 = never).
+    #[serde(default = "default_lockout_threshold")]
+    pub lockout_threshold: u32,
+    /// How long a locked account stays locked, in seconds.
+    #[serde(default = "default_lockout_secs")]
+    pub lockout_secs: u64,
+}
+
+fn default_rate_limit() -> u32 {
+    10
+}
+
+fn default_rate_window() -> u64 {
+    60
+}
+
+fn default_lockout_threshold() -> u32 {
+    5
+}
+
+fn default_lockout_secs() -> u64 {
+    15 * 60
 }
 
 fn default_session_ttl() -> u64 {
@@ -64,6 +92,14 @@ pub struct UserRow {
     pub id: i64,
     pub username: String,
     pub password_hash: String,
+    /// Epoch ms until which logins are refused.
+    pub locked_until: Option<i64>,
+}
+
+impl UserRow {
+    pub fn is_locked(&self) -> bool {
+        self.locked_until.is_some_and(|until| until > now_millis())
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -131,7 +167,11 @@ pub fn stage() -> AdHoc {
             return Err(rocket);
         }
         tracing::info!(url = %config.database_url, "database ready");
-        Ok(rocket.manage(pool).manage(config))
+        let limiter = crate::ratelimit::RateLimiter::new(
+            config.login_rate_limit,
+            std::time::Duration::from_secs(config.rate_limit_window_secs),
+        );
+        Ok(rocket.manage(pool).manage(limiter).manage(config))
     })
 }
 
@@ -147,7 +187,7 @@ async fn seed_demo_admin(db: &Db) -> Result<(), sqlx::Error> {
 }
 
 pub async fn find_user(db: &Db, username: &str) -> Result<Option<UserRow>, sqlx::Error> {
-    sqlx::query_as("SELECT id, username, password_hash FROM users WHERE username = ?")
+    sqlx::query_as("SELECT id, username, password_hash, locked_until FROM users WHERE username = ?")
         .bind(username)
         .fetch_optional(db)
         .await
@@ -222,4 +262,48 @@ pub async fn withdraw(db: &Db, user_id: i64, cents: Cents) -> Result<bool, sqlx:
     .execute(db)
     .await?;
     Ok(result.rows_affected() == 1)
+}
+
+/// Record a failed login. After `threshold` consecutive failures the account
+/// is locked for `lock_secs` and the counter resets. Returns `true` if this
+/// failure locked the account. A threshold of 0 disables lockout.
+pub async fn record_failed_login(
+    db: &Db,
+    user_id: i64,
+    threshold: u32,
+    lock_secs: u64,
+) -> Result<bool, sqlx::Error> {
+    if threshold == 0 {
+        return Ok(false);
+    }
+    let until = now_millis().saturating_add(
+        i64::try_from(lock_secs)
+            .unwrap_or(i64::MAX / 1000)
+            .saturating_mul(1000),
+    );
+    // One atomic UPDATE; SQLite evaluates every SET expression against the
+    // row's old values.
+    let locked: Option<i64> = sqlx::query_scalar(
+        "UPDATE users SET
+             locked_until  = CASE WHEN failed_logins + 1 >= ?2 THEN ?3 ELSE locked_until END,
+             failed_logins = CASE WHEN failed_logins + 1 >= ?2 THEN 0 ELSE failed_logins + 1 END
+         WHERE id = ?1
+         RETURNING CASE WHEN locked_until = ?3 THEN 1 END",
+    )
+    .bind(user_id)
+    .bind(i64::from(threshold))
+    .bind(until)
+    .fetch_optional(db)
+    .await?
+    .flatten();
+    Ok(locked.is_some())
+}
+
+/// Clear the failure counter and any lock after a successful login.
+pub async fn record_successful_login(db: &Db, user_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE users SET failed_logins = 0, locked_until = NULL WHERE id = ?")
+        .bind(user_id)
+        .execute(db)
+        .await?;
+    Ok(())
 }

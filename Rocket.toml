@@ -16,6 +16,16 @@ allow_registration = true
 session_ttl_secs = 28800
 session_idle_secs = 1800
 session_check_secs = 15
+# Brute-force protection: at most `login_rate_limit` login (and, separately,
+# registration) attempts per client IP per window (0 = off), and lock an
+# account for `lockout_secs` after `lockout_threshold` consecutive failures.
+login_rate_limit = 10
+rate_limit_window_secs = 60
+lockout_threshold = 5
+lockout_secs = 900
+# Use the TCP peer address as the client IP. Don't trust X-Real-IP unless the
+# app runs behind a reverse proxy that sets it (then: ip_header = "X-Real-IP").
+ip_header = false
 
 [debug]
 port = 8080

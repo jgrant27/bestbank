@@ -19,6 +19,14 @@ pub fn hash_password(password: &str) -> String {
         .to_string()
 }
 
+/// A valid Argon2id hash of a random password, computed once. Used to spend
+/// the same time verifying logins for unknown usernames.
+pub fn dummy_hash() -> &'static str {
+    static DUMMY: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| hash_password(&crate::telemetry::random_hex(16)));
+    &DUMMY
+}
+
 /// Verify `password` against a stored PHC hash string. Returns `false` for
 /// a mismatch or an unparseable hash.
 pub fn verify_password(password: &str, phc_hash: &str) -> bool {

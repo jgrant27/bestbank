@@ -16,8 +16,8 @@ that demonstrates:
 - Authenticated, per-user WebSocket notifications (`rocket_ws`) on the same
   port as the app.
 
-> **This is a demo, not a real bank.** It has a hard-coded demo account and no
-> rate limiting. See
+> **This is a demo, not a real bank.** It ships with a hard-coded demo
+> account. See
 > [Security notes](#security-notes).
 
 ### Install Rust
@@ -138,8 +138,22 @@ What the demo does:
 - WebSocket connections require a logged-in session and only receive that
   user's events.
 
+- Brute-force protection: login and registration attempts are limited per
+  client IP (`login_rate_limit` per `rate_limit_window_secs`, default 10/min;
+  excess requests get `429` with `Retry-After`), and an account is locked for
+  `lockout_secs` (default 15 min) after `lockout_threshold` (default 5)
+  consecutive failed logins. Unknown usernames are checked against a dummy
+  Argon2 hash so timing doesn't reveal which accounts exist.
+- The client IP is the TCP peer address (`ip_header = false`), so the limit
+  can't be dodged by spoofing `X-Real-IP`. Behind a trusted reverse proxy, set
+  `ip_header = "X-Real-IP"` (or whatever header the proxy sets).
+
 What it doesn't do (fine for a demo, not for production):
 
 - The `admin`/`admin` account is hard-coded.
-- No login rate limiting or account lockout.
+- Rate limits are in memory and per process (reset on restart, not shared
+  between instances).
+- The "account locked" message reveals that a username exists (a deliberate
+  UX trade-off, mitigated by the per-IP rate limit). Lockout can also be
+  abused to lock someone out for `lockout_secs`.
 - No CSRF tokens (relies on `SameSite`); login CSRF is not prevented.

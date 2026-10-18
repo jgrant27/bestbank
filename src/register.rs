@@ -10,6 +10,7 @@ use rocket_dyn_templates::Template;
 
 use crate::db::{self, AppConfig, Db};
 use crate::login::User;
+use crate::ratelimit::RegisterAttempt;
 use crate::telemetry::RequestId;
 
 pub const USERNAME_MIN: usize = 3;
@@ -117,6 +118,7 @@ pub fn register_page(
 pub async fn register(
     db: &State<Db>,
     config: &State<AppConfig>,
+    _attempt: RegisterAttempt,
     form: Form<Registration>,
     request_id: RequestId,
 ) -> Option<Flash<Redirect>> {

@@ -810,3 +810,176 @@ fn logged_in_users_visiting_login_go_to_their_account() {
     let response = client.get("/login").dispatch();
     assert_eq!(location(&response).as_deref(), Some("/user_banking"));
 }
+
+fn login_from<'c>(client: &'c Client, ip: &str, user: &str, password: &str) -> LocalResponse<'c> {
+    client
+        .post("/login")
+        .remote(format!("{ip}:40000").parse().unwrap())
+        .header(ContentType::Form)
+        .body(format!("username={user}&password={password}"))
+        .dispatch()
+}
+
+#[test]
+fn login_attempts_are_rate_limited_per_ip() {
+    let figment = figment("sqlite::memory:")
+        .merge(("login_rate_limit", 3))
+        .merge(("lockout_threshold", 0));
+    let client = Client::tracked(super::build(figment)).unwrap();
+    for _ in 0..3 {
+        let response = login_from(&client, "10.0.0.1", "admin", "wrong");
+        assert_eq!(response.status(), Status::SeeOther);
+    }
+    // 4th attempt from the same IP is refused before the password is checked,
+    // even with the right password.
+    let response = login_from(&client, "10.0.0.1", "admin", "admin");
+    assert_eq!(response.status(), Status::TooManyRequests);
+    let retry: u64 = response
+        .headers()
+        .get_one("Retry-After")
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((1..=60).contains(&retry));
+    assert!(
+        response
+            .into_string()
+            .unwrap()
+            .contains("Too many attempts")
+    );
+
+    // Spoofing X-Real-IP doesn't help (ip_header is disabled).
+    let response = client
+        .post("/login")
+        .remote("10.0.0.1:40000".parse().unwrap())
+        .header(rocket::http::Header::new("X-Real-IP", "192.0.2.99"))
+        .header(ContentType::Form)
+        .body("username=admin&password=admin")
+        .dispatch();
+    assert_eq!(response.status(), Status::TooManyRequests);
+
+    // A different client IP is unaffected.
+    let response = login_from(&client, "10.0.0.2", "admin", "admin");
+    assert_eq!(location(&response).as_deref(), Some("/user_banking"));
+}
+
+#[test]
+fn rate_limit_window_expires() {
+    let figment = figment("sqlite::memory:")
+        .merge(("login_rate_limit", 1))
+        .merge(("rate_limit_window_secs", 1));
+    let client = Client::tracked(super::build(figment)).unwrap();
+    login_from(&client, "10.0.0.1", "admin", "wrong");
+    assert_eq!(
+        login_from(&client, "10.0.0.1", "admin", "admin").status(),
+        Status::TooManyRequests
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let response = login_from(&client, "10.0.0.1", "admin", "admin");
+    assert_eq!(location(&response).as_deref(), Some("/user_banking"));
+}
+
+#[test]
+fn registration_is_rate_limited_separately() {
+    let figment = figment("sqlite::memory:").merge(("login_rate_limit", 2));
+    let client = Client::tracked(super::build(figment)).unwrap();
+    for name in ["user1", "user2"] {
+        let response = register(&client, name, "sunny-river-42", "sunny-river-42");
+        assert_eq!(response.status(), Status::SeeOther);
+    }
+    let response = register(&client, "user3", "sunny-river-42", "sunny-river-42");
+    assert_eq!(response.status(), Status::TooManyRequests);
+    // Logins have their own budget.
+    assert_eq!(
+        location(&login(&client, "user1", "sunny-river-42")).as_deref(),
+        Some("/user_banking")
+    );
+}
+
+#[test]
+fn account_locks_after_repeated_failures_and_unlocks_later() {
+    let (url, _dir) = file_db(&[("alice", "sunny-river-42")]);
+    let figment = figment(&url)
+        .merge(("lockout_threshold", 3))
+        .merge(("lockout_secs", 1))
+        .merge(("login_rate_limit", 0));
+    let client = Client::tracked(super::build(figment)).unwrap();
+    for _ in 0..2 {
+        login(&client, "admin", "wrong");
+        let page = client.get("/login").dispatch().into_string().unwrap();
+        assert!(page.contains("Invalid username/password."));
+    }
+    login(&client, "admin", "wrong");
+    let page = client.get("/login").dispatch().into_string().unwrap();
+    assert!(page.contains("temporarily locked"), "3rd failure locks");
+
+    // Even the correct password is refused while locked.
+    let response = login(&client, "admin", "admin");
+    assert_eq!(location(&response).as_deref(), Some("/login"));
+    let page = client.get("/login").dispatch().into_string().unwrap();
+    assert!(page.contains("temporarily locked"));
+    assert_eq!(
+        client.get("/json/account_info").dispatch().status(),
+        Status::Unauthorized
+    );
+
+    // Other accounts are unaffected.
+    assert_eq!(
+        location(&login(&client, "alice", "sunny-river-42")).as_deref(),
+        Some("/user_banking")
+    );
+
+    // After the lock expires the right password works again.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert_eq!(
+        location(&login(&client, "admin", "admin")).as_deref(),
+        Some("/user_banking")
+    );
+}
+
+#[test]
+fn successful_login_resets_the_failure_count() {
+    let figment = figment("sqlite::memory:")
+        .merge(("lockout_threshold", 3))
+        .merge(("login_rate_limit", 0));
+    let client = Client::tracked(super::build(figment)).unwrap();
+    for _ in 0..2 {
+        login(&client, "admin", "wrong");
+    }
+    assert_eq!(
+        location(&login(&client, "admin", "admin")).as_deref(),
+        Some("/user_banking")
+    );
+    for _ in 0..2 {
+        login(&client, "admin", "wrong");
+    }
+    // Only 2 consecutive failures since the success: not locked.
+    assert_eq!(
+        location(&login(&client, "admin", "admin")).as_deref(),
+        Some("/user_banking")
+    );
+}
+
+#[test]
+fn unknown_users_take_as_long_as_wrong_passwords() {
+    // Unknown usernames are verified against a dummy hash, so they cost
+    // about as much as a real wrong password (no cheap user enumeration).
+    let figment = figment("sqlite::memory:")
+        .merge(("login_rate_limit", 0))
+        .merge(("lockout_threshold", 0));
+    let client = Client::tracked(super::build(figment)).unwrap();
+    login(&client, "nobody", "x"); // warm up the dummy hash
+    let time = |user: &str| {
+        let start = std::time::Instant::now();
+        for _ in 0..3 {
+            login(&client, user, "wrong-password");
+        }
+        start.elapsed()
+    };
+    let known = time("admin");
+    let unknown = time("nobody");
+    assert!(
+        unknown * 3 > known,
+        "unknown {unknown:?} vs known {known:?}: should be comparable"
+    );
+}

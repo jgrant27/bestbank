@@ -12,8 +12,12 @@ use rocket_dyn_templates::Template;
 use crate::db::{self, AppConfig, Db};
 use crate::telemetry::RequestId;
 
+use crate::ratelimit::LoginAttempt;
 use crate::sessions;
 pub use crate::sessions::SESSION_COOKIE;
+
+pub const LOCKED_MESSAGE: &str =
+    "This account is temporarily locked after too many failed logins. Please try again later.";
 
 #[derive(FromForm)]
 pub struct Login {
@@ -92,6 +96,7 @@ pub async fn login(
     db: &State<Db>,
     config: &State<AppConfig>,
     jar: &CookieJar<'_>,
+    _attempt: LoginAttempt,
     login: Form<Login>,
     request_id: RequestId,
 ) -> Result<Redirect, Box<Flash<Redirect>>> {
@@ -105,38 +110,69 @@ pub async fn login(
         tracing::error!(request_id = %request_id.0, error = %e, "user lookup failed");
         something_went_wrong()
     })?;
-    let verified = match &user {
-        Some(user) => {
-            // Argon2 is deliberately slow; keep it off the async executor.
-            let (password, hash) = (login.password.clone(), user.password_hash.clone());
-            rocket::tokio::task::spawn_blocking(move || {
-                crate::hashing::verify_password(&password, &hash)
-            })
-            .await
-            .unwrap_or(false)
+    if user.as_ref().is_some_and(db::UserRow::is_locked) {
+        tracing::warn!(request_id = %request_id.0, username = ?login.username, "login refused: account locked");
+        return Err(Box::new(Flash::error(
+            Redirect::to(uri!(login_page)),
+            LOCKED_MESSAGE,
+        )));
+    }
+    // Argon2 is deliberately slow; keep it off the async executor. Unknown
+    // users are checked against a dummy hash so response timing doesn't
+    // reveal which usernames exist.
+    let password = login.password.clone();
+    let hash = user.as_ref().map(|u| u.password_hash.clone());
+    let verified = rocket::tokio::task::spawn_blocking(move || {
+        if let Some(hash) = hash {
+            crate::hashing::verify_password(&password, &hash)
+        } else {
+            crate::hashing::verify_password(&password, crate::hashing::dummy_hash());
+            false
         }
-        None => false,
+    })
+    .await
+    .unwrap_or(false);
+
+    let Some(user) = user else {
+        tracing::warn!(request_id = %request_id.0, username = ?login.username, "login failed: unknown user");
+        return Err(invalid());
     };
-    if let (true, Some(user)) = (verified, user) {
-        // Always issue a fresh session (rotation), revoking any previous one
-        // presented by this browser.
-        let previous = jar
-            .get_private(SESSION_COOKIE)
-            .map(|c| c.value().to_owned());
-        let session = sessions::create(db, config, user.id, previous.as_deref())
+    if !verified {
+        let locked = db::record_failed_login(db, user.id, config.lockout_threshold, config.lockout_secs)
             .await
             .map_err(|e| {
-                tracing::error!(request_id = %request_id.0, error = %e, "session creation failed");
+                tracing::error!(request_id = %request_id.0, error = %e, "recording failed login failed");
                 something_went_wrong()
             })?;
-        jar.add_private(session_cookie(session.token, config));
-        // Debug-format user input so control characters can't forge log lines.
-        tracing::info!(request_id = %request_id.0, username = ?user.username, "login succeeded");
-        Ok(Redirect::to(uri!(crate::banking::user_banking)))
-    } else {
-        tracing::warn!(request_id = %request_id.0, username = ?login.username, "login failed");
-        Err(invalid())
+        tracing::warn!(request_id = %request_id.0, username = ?user.username, locked, "login failed: bad password");
+        if locked {
+            return Err(Box::new(Flash::error(
+                Redirect::to(uri!(login_page)),
+                LOCKED_MESSAGE,
+            )));
+        }
+        return Err(invalid());
     }
+
+    db::record_successful_login(db, user.id).await.map_err(|e| {
+        tracing::error!(request_id = %request_id.0, error = %e, "resetting login failures failed");
+        something_went_wrong()
+    })?;
+    // Always issue a fresh session (rotation), revoking any previous one
+    // presented by this browser.
+    let previous = jar
+        .get_private(SESSION_COOKIE)
+        .map(|c| c.value().to_owned());
+    let session = sessions::create(db, config, user.id, previous.as_deref())
+        .await
+        .map_err(|e| {
+            tracing::error!(request_id = %request_id.0, error = %e, "session creation failed");
+            something_went_wrong()
+        })?;
+    jar.add_private(session_cookie(session.token, config));
+    // Debug-format user input so control characters can't forge log lines.
+    tracing::info!(request_id = %request_id.0, username = ?user.username, "login succeeded");
+    Ok(Redirect::to(uri!(crate::banking::user_banking)))
 }
 
 /// Already logged in: go to the account page.

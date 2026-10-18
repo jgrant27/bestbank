@@ -16,6 +16,7 @@ mod events;
 mod hashing;
 mod login;
 mod money;
+mod ratelimit;
 mod register;
 mod sessions;
 mod telemetry;
@@ -89,6 +90,7 @@ fn build(figment: Figment) -> Rocket<Build> {
         // mask the 401s from guarded routes. Path is relative to the working
         // directory (like `templates/`).
         .mount("/static", FileServer::from("static"))
+        .register("/", catchers![ratelimit::too_many_requests])
         .manage(events::Events::default())
 }
 
