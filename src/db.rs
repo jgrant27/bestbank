@@ -25,6 +25,9 @@ pub struct AppConfig {
     /// Create the demo `admin`/`admin` account if it doesn't exist.
     #[serde(default = "default_true")]
     pub seed_demo_admin: bool,
+    /// Allow new users to sign up at `/register`.
+    #[serde(default = "default_true")]
+    pub allow_registration: bool,
 }
 
 fn default_database_url() -> String {
@@ -107,7 +110,7 @@ pub fn stage() -> AdHoc {
             return Err(rocket);
         }
         tracing::info!(url = %config.database_url, "database ready");
-        Ok(rocket.manage(pool))
+        Ok(rocket.manage(pool).manage(config))
     })
 }
 

@@ -499,3 +499,137 @@ async fn concurrent_withdrawals_cannot_overdraw() {
         .unwrap();
     assert_eq!(info["balance"], "0.00");
 }
+
+fn register<'c>(
+    client: &'c Client,
+    user: &str,
+    password: &str,
+    confirm: &str,
+) -> LocalResponse<'c> {
+    client
+        .post("/register")
+        .header(ContentType::Form)
+        .body(format!(
+            "username={user}&password={password}&confirm={confirm}"
+        ))
+        .dispatch()
+}
+
+#[test]
+fn register_page_renders_and_is_linked_from_login() {
+    let client = client();
+    let response = client.get("/register").dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    let body = response.into_string().unwrap();
+    assert!(body.contains("Create an account"));
+    assert!(body.contains(r#"name="confirm""#));
+    let login_page = client.get("/login").dispatch().into_string().unwrap();
+    assert!(login_page.contains(r#"href="/register""#));
+}
+
+#[test]
+fn registration_creates_a_user_who_can_log_in() {
+    let client = client();
+    let response = register(&client, "dana", "sunny-river-42", "sunny-river-42");
+    assert_eq!(response.status(), Status::SeeOther);
+    assert_eq!(location(&response).as_deref(), Some("/login"));
+    let page = client.get("/login").dispatch().into_string().unwrap();
+    assert!(page.contains("Account created. Please log in."));
+
+    assert_eq!(
+        location(&login(&client, "dana", "sunny-river-42")).as_deref(),
+        Some("/user_banking")
+    );
+    let info: Value = client
+        .get("/json/account_info")
+        .dispatch()
+        .into_json()
+        .unwrap();
+    assert_eq!(info["user_name"], "dana");
+    assert_eq!(info["balance"], "0.00");
+    // Logged-in users are sent to their account instead of the form.
+    assert_eq!(
+        location(&client.get("/register").dispatch()).as_deref(),
+        Some("/user_banking")
+    );
+    // New users aren't admins.
+    assert_eq!(client.get("/dump").dispatch().status(), Status::Forbidden);
+}
+
+#[test]
+fn registration_validation_errors() {
+    let client = client();
+    for (user, password, confirm, message) in [
+        (
+            "ab",
+            "long-enough-pw",
+            "long-enough-pw",
+            "Username must be 3-32 characters long.",
+        ),
+        (
+            "bad%20name",
+            "long-enough-pw",
+            "long-enough-pw",
+            "Username may only contain",
+        ),
+        ("erin", "short", "short", "at least 8 characters"),
+        ("erin", "password1", "password1", "too common"),
+        (
+            "erin",
+            "erin-is-great",
+            "erin-is-great",
+            "must not contain your username",
+        ),
+        (
+            "erin",
+            "long-enough-pw",
+            "different-pw",
+            "Passwords do not match.",
+        ),
+    ] {
+        let response = register(&client, user, password, confirm);
+        assert_eq!(response.status(), Status::SeeOther);
+        assert_eq!(location(&response).as_deref(), Some("/register"));
+        let page = client.get("/register").dispatch().into_string().unwrap();
+        assert!(
+            page.contains(message),
+            "{user}/{password}: expected {message:?}"
+        );
+    }
+    // None of those created an account.
+    login(&client, "erin", "long-enough-pw");
+    assert_eq!(
+        client.get("/json/account_info").dispatch().status(),
+        Status::Unauthorized
+    );
+}
+
+#[test]
+fn duplicate_usernames_are_rejected_case_insensitively() {
+    let client = client();
+    for name in ["admin", "ADMIN", "Admin"] {
+        let response = register(&client, name, "another-long-pw", "another-long-pw");
+        assert_eq!(location(&response).as_deref(), Some("/register"), "{name}");
+        let page = client.get("/register").dispatch().into_string().unwrap();
+        assert!(page.contains("already taken"), "{name}");
+    }
+    // The original admin password still works.
+    assert_eq!(
+        location(&login(&client, "admin", "admin")).as_deref(),
+        Some("/user_banking")
+    );
+}
+
+#[test]
+fn registration_can_be_disabled() {
+    let figment = figment("sqlite::memory:").merge(("allow_registration", false));
+    let client = Client::tracked(super::build(figment)).unwrap();
+    assert_eq!(
+        client.get("/register").dispatch().status(),
+        Status::NotFound
+    );
+    let response = register(&client, "frank", "frank-long-pw1", "frank-long-pw1");
+    assert_eq!(response.status(), Status::NotFound);
+    let page = client.get("/login").dispatch().into_string().unwrap();
+    assert!(!page.contains(r#"href="/register""#));
+}

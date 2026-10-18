@@ -14,8 +14,8 @@ that demonstrates:
 - Authenticated, per-user WebSocket notifications (`rocket_ws`) on the same
   port as the app.
 
-> **This is a demo, not a real bank.** It has a hard-coded demo account, no
-> rate limiting and no user registration. See
+> **This is a demo, not a real bank.** It has a hard-coded demo account and no
+> rate limiting. See
 > [Security notes](#security-notes).
 
 ### Install Rust
@@ -62,9 +62,18 @@ Configuration lives in `Rocket.toml` (`[default]`, `[debug]`, `[release]`,
 `[release.tls]`); any value can be overridden with `ROCKET_*` environment
 variables.
 
-### Log in
+### Log in / register
 
-A single demo account is seeded at startup: **admin / admin**.
+A demo account is seeded at startup: **admin / admin** (disable with
+`seed_demo_admin = false`). New users can sign up at `/register`:
+
+- usernames are 3-32 characters from `A-Z a-z 0-9 _ . -` and unique
+  regardless of case;
+- passwords must be 8-128 characters, must not be a very common password and
+  must not contain the username.
+
+Set `allow_registration = false` in `Rocket.toml` (or
+`ROCKET_ALLOW_REGISTRATION=false`) to turn sign-ups off.
 
 ### Endpoints
 
@@ -73,6 +82,8 @@ A single demo account is seeded at startup: **admin / admin**.
 | GET    | `/`, `/login`        | –     | Login page (with flash messages)          |
 | POST   | `/login`             | –     | Form: `username`, `password`              |
 | POST   | `/logout`            | –     | Clears the session                        |
+| GET    | `/register`          | –     | Sign-up form                              |
+| POST   | `/register`          | –     | Form: `username`, `password`, `confirm`   |
 | GET    | `/user_banking`      | user  | Banking page (redirects to login if not)  |
 | GET    | `/json/account_info` | user  | Balance and history, newest first         |
 | POST   | `/json/deposit`      | user  | JSON `{"amount": 12.34}`                  |

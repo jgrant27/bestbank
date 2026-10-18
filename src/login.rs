@@ -9,7 +9,7 @@ use rocket::response::{Flash, Redirect};
 
 use rocket_dyn_templates::Template;
 
-use crate::db::{self, Db};
+use crate::db::{self, AppConfig, Db};
 use crate::telemetry::RequestId;
 
 /// Name of the (private, encrypted) session cookie.
@@ -116,8 +116,11 @@ pub fn login_user(_user: User) -> Redirect {
 }
 
 #[get("/login", rank = 1)]
-pub fn login_page(flash: Option<FlashMessage<'_>>) -> Template {
+pub fn login_page(config: &State<AppConfig>, flash: Option<FlashMessage<'_>>) -> Template {
     let mut context: HashMap<&str, &str> = HashMap::new();
+    if config.allow_registration {
+        context.insert("allow_registration", "true");
+    }
     if let Some(ref flash) = flash {
         context.insert("flash", flash.message());
         context.insert("flash_kind", flash.kind());

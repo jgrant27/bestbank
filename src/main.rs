@@ -7,6 +7,8 @@ extern crate rocket;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_ws;
 
 mod banking;
 mod db;
@@ -14,6 +16,7 @@ mod events;
 mod hashing;
 mod login;
 mod money;
+mod register;
 mod telemetry;
 
 use rocket::figment::Figment;
@@ -67,6 +70,9 @@ fn build(figment: Figment) -> Rocket<Build> {
                 login::logout,
                 login::login_user,
                 login::login_page,
+                register::register_page,
+                register::register_logged_in,
+                register::register,
                 banking::user_banking,
                 banking::user_banking_login,
                 banking::account_info,

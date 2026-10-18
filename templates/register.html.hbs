@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>🏦 Best Bank 🏦 · Register</title>
+    <link rel="icon" href="/static/favicon.ico" />
+    <style>
+      html {
+          font-family: "Verdana", san-serif;
+      }
+      .flash { color: black; padding: 4px; background-color: tomato; }
+      .flash.success { background-color: palegreen; }
+      .hint { font-size: small; color: dimgray; }
+    </style>
+  </head>
+  <body>
+    <h1>🏦 Best Bank 🏦</h1>
+    <h2>Create an account</h2>
+    {{#if flash}}
+    <p class="flash {{ flash_kind }}">{{ flash }}</p>
+    {{/if}}
+
+    <form action="/register" method="post" accept-charset="utf-8">
+      <p>
+        <label for="username">username</label>
+        <input type="text" name="username" id="username" value=""
+               minlength="3" maxlength="32" pattern="[A-Za-z0-9_.\-]+" required />
+        <span class="hint">3-32 letters, digits, _ . -</span>
+      </p>
+      <p>
+        <label for="password">password</label>
+        <input type="password" name="password" id="password" value=""
+               minlength="8" maxlength="128" required />
+        <span class="hint">at least 8 characters, not a common password, not containing your username</span>
+      </p>
+      <p>
+        <label for="confirm">confirm password</label>
+        <input type="password" name="confirm" id="confirm" value="" required />
+      </p>
+      <p><input type="submit" value="register"></p>
+    </form>
+    <p>Already have an account? <a href="/login">Log in</a></p>
+  </body>
+</html>

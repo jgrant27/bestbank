@@ -167,6 +167,7 @@ dependencies = [
  "serde",
  "sqlx",
  "tempfile",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
 ]

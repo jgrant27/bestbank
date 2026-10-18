@@ -9,6 +9,8 @@ address = "0.0.0.0"
 database_url = "sqlite://bestbank.db"
 # Seed the demo admin/admin account when it doesn't exist.
 seed_demo_admin = true
+# Allow sign-ups at /register.
+allow_registration = true
 
 [debug]
 port = 8080
