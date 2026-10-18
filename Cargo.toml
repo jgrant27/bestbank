@@ -12,6 +12,7 @@ rocket = { version = "0.5.1", features = ["json", "secrets", "tls"] }
 rocket_dyn_templates = { version = "0.2.0", features = ["handlebars"] }
 rocket_ws = "0.1.1"
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.11"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

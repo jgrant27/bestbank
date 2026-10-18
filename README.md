@@ -4,8 +4,10 @@
 A small [Rocket](https://rocket.rs) 0.5 web app in [Rust](https://www.rust-lang.org)
 that demonstrates:
 
-- Login / logout with an **encrypted, authenticated session cookie** (Rocket
-  private cookies, `HttpOnly`, `SameSite=Strict`) and Argon2id password hashes.
+- Login / logout with **server-side sessions**: a random token in an
+  encrypted private cookie (`HttpOnly`, `SameSite=Strict`), stored hashed in
+  the database with absolute and idle expiry, rotated on login, revoked on
+  logout, plus "log out everywhere". Argon2id password hashes.
 - Request guards, request ranking, managed state and flash messages.
 - SQLite persistence via [`sqlx`](https://github.com/launchbadge/sqlx) with
   embedded migrations, with money stored as integer cents and atomic,
@@ -81,7 +83,8 @@ Set `allow_registration = false` in `Rocket.toml` (or
 |--------|----------------------|-------|-------------------------------------------|
 | GET    | `/`, `/login`        | –     | Login page (with flash messages)          |
 | POST   | `/login`             | –     | Form: `username`, `password`              |
-| POST   | `/logout`            | –     | Clears the session                        |
+| POST   | `/logout`            | –     | Deletes this session (server side)        |
+| POST   | `/logout_all`        | user  | Revokes all of the user's sessions        |
 | GET    | `/register`          | –     | Sign-up form                              |
 | POST   | `/register`          | –     | Form: `username`, `password`, `confirm`   |
 | GET    | `/user_banking`      | user  | Banking page (redirects to login if not)  |
@@ -122,9 +125,13 @@ cargo clippy --all-targets
 
 What the demo does:
 
-- Session cookies are Rocket private cookies (AES-256-GCM with the app's
-  secret key), so they can't be forged or tampered with, and the user guard
-  checks the user still exists.
+- Sessions are server-side. The cookie (a Rocket private cookie, AES-256-GCM
+  with the app's secret key) carries only a random 256-bit token; the
+  database stores its SHA-256 with an absolute lifetime (`session_ttl_secs`,
+  default 8h) and idle timeout (`session_idle_secs`, default 30 min). Login
+  rotates the session, logout deletes it, `/logout_all` revokes every
+  session of the user, and open websockets close within
+  `session_check_secs` once their session ends.
 - Passwords are stored as salted Argon2id PHC strings.
 - `SameSite=Strict` on the session cookie is the CSRF defence for the POST
   routes.
@@ -136,4 +143,3 @@ What it doesn't do (fine for a demo, not for production):
 - The `admin`/`admin` account is hard-coded.
 - No login rate limiting or account lockout.
 - No CSRF tokens (relies on `SameSite`); login CSRF is not prevented.
-- Sessions have no server-side revocation; logout only deletes the cookie.

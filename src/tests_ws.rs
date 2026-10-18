@@ -114,6 +114,11 @@ impl Browser {
 
 /// Launch the app on a free local port with an in-memory database.
 async fn launch() -> (u16, rocket::Shutdown) {
+    launch_with(&[]).await
+}
+
+/// Like [`launch`], with extra config overrides.
+async fn launch_with(overrides: &[(&str, i64)]) -> (u16, rocket::Shutdown) {
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -124,6 +129,9 @@ async fn launch() -> (u16, rocket::Shutdown) {
         .merge(("address", "127.0.0.1"))
         .merge(("port", port))
         .merge(("log_level", "off"));
+    let figment = overrides
+        .iter()
+        .fold(figment, |f, (key, value)| f.merge((*key, *value)));
     let rocket = super::build(figment).ignite().await.expect("ignite");
     let shutdown = rocket.shutdown();
     rocket::tokio::spawn(rocket.launch());
@@ -205,6 +213,36 @@ async fn websocket_events_are_isolated_per_user() {
         None,
         "alice must not see bob's transactions"
     );
+
+    shutdown.notify();
+}
+
+#[rocket::async_test]
+async fn open_websocket_is_closed_when_sessions_are_revoked() {
+    let (port, shutdown) = launch_with(&[("session_check_secs", 1)]).await;
+    let mut laptop = register_and_login(port, "carol", "sunny-river-42").await;
+    let mut phone = Browser::new(port);
+    let response = phone
+        .form("/login", "username=carol&password=sunny-river-42")
+        .await;
+    assert_eq!(response.status, 303);
+    let mut phone_ws = phone.websocket().await.expect("phone ws");
+
+    // Revoke everything from the laptop; the phone's open socket closes.
+    assert_eq!(laptop.form("/logout_all", "").await.status, 303);
+    let closed = timeout(Duration::from_secs(5), async {
+        loop {
+            match phone_ws.next().await {
+                None | Some(Err(_)) => return true,
+                Some(Ok(message)) if message.is_close() => return true,
+                Some(Ok(_)) => {}
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(closed, "websocket should close after revocation");
+    assert!(phone.websocket().await.is_none(), "and can't reconnect");
 
     shutdown.notify();
 }

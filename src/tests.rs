@@ -422,7 +422,8 @@ fn migrations_are_applied_once() {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(applied, 1);
+        let embedded = sqlx::migrate!("./migrations").iter().count();
+        assert_eq!(usize::try_from(applied).unwrap(), embedded);
         let tables: Vec<String> = sqlx::query_scalar(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('users', 'transactions') ORDER BY name",
         )
@@ -632,4 +633,180 @@ fn registration_can_be_disabled() {
     assert_eq!(response.status(), Status::NotFound);
     let page = client.get("/login").dispatch().into_string().unwrap();
     assert!(!page.contains(r#"href="/register""#));
+}
+
+/// Log in and return the raw (decrypted) session token.
+fn login_token(client: &Client, user: &str, password: &str) -> String {
+    let response = login(client, user, password);
+    assert_eq!(location(&response).as_deref(), Some("/user_banking"));
+    response
+        .cookies()
+        .get_private(SESSION_COOKIE)
+        .expect("session cookie")
+        .value()
+        .to_owned()
+}
+
+/// Status of `/json/account_info` using only the given session token.
+fn status_with_token(client: &Client, token: &str) -> Status {
+    client
+        .get("/json/account_info")
+        .private_cookie(Cookie::new(SESSION_COOKIE, token.to_owned()))
+        .dispatch()
+        .status()
+}
+
+fn session_count(client: &Client) -> i64 {
+    let pool = client.rocket().state::<db::Db>().unwrap().clone();
+    let runtime = rocket::tokio::runtime::Runtime::new().unwrap();
+    // Only valid for file databases (a separate runtime/connection).
+    runtime.block_on(async move {
+        sqlx::query_scalar("SELECT COUNT(*) FROM sessions")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    })
+}
+
+#[test]
+fn session_token_is_random_and_not_the_username() {
+    let client = client();
+    let a = login_token(&client, "admin", "admin");
+    assert_eq!(a.len(), 64);
+    assert!(a.bytes().all(|b| b.is_ascii_hexdigit()));
+    assert!(!a.contains("admin"));
+    // The old plain `user_name` cookie is meaningless now.
+    let response = Client::untracked(super::build(figment("sqlite::memory:")))
+        .unwrap()
+        .get("/json/account_info")
+        .private_cookie(Cookie::new("user_name", "admin"))
+        .dispatch()
+        .status();
+    assert_eq!(response, Status::Unauthorized);
+}
+
+#[test]
+fn session_is_rotated_on_login() {
+    let client = client();
+    let first = login_token(&client, "admin", "admin");
+    assert_eq!(status_with_token(&client, &first), Status::Ok);
+    // Logging in again from the same browser issues a new token and revokes
+    // the old one.
+    let second = login_token(&client, "admin", "admin");
+    assert_ne!(first, second);
+    assert_eq!(status_with_token(&client, &first), Status::Unauthorized);
+    assert_eq!(status_with_token(&client, &second), Status::Ok);
+}
+
+#[test]
+fn logout_revokes_the_session_server_side() {
+    let client = client();
+    let token = login_token(&client, "admin", "admin");
+    client.post("/logout").dispatch();
+    // Replaying the captured cookie after logout no longer works.
+    assert_eq!(status_with_token(&client, &token), Status::Unauthorized);
+}
+
+#[test]
+fn logout_everywhere_revokes_all_of_a_users_sessions() {
+    let (url, _dir) = file_db(&[("alice", "sunny-river-42")]);
+    let laptop = Client::tracked(super::build(figment(&url))).unwrap();
+    let phone = Client::tracked(super::build(figment(&url))).unwrap();
+    let other = Client::tracked(super::build(figment(&url))).unwrap();
+    let laptop_token = login_token(&laptop, "admin", "admin");
+    login(&phone, "admin", "admin");
+    login(&other, "alice", "sunny-river-42");
+    assert_eq!(
+        phone.get("/json/account_info").dispatch().status(),
+        Status::Ok
+    );
+    assert_eq!(session_count(&laptop), 3);
+
+    let response = laptop.post("/logout_all").dispatch();
+    assert_eq!(location(&response).as_deref(), Some("/login"));
+    let page = laptop.get("/login").dispatch().into_string().unwrap();
+    assert!(page.contains("Logged out of all sessions."));
+
+    assert_eq!(
+        status_with_token(&laptop, &laptop_token),
+        Status::Unauthorized
+    );
+    assert_eq!(
+        phone.get("/json/account_info").dispatch().status(),
+        Status::Unauthorized
+    );
+    // Other users are unaffected.
+    assert_eq!(
+        other.get("/json/account_info").dispatch().status(),
+        Status::Ok
+    );
+    assert_eq!(session_count(&laptop), 1);
+
+    // Without a session it's a harmless redirect.
+    let anonymous = Client::tracked(super::build(figment(&url))).unwrap();
+    let response = anonymous.post("/logout_all").dispatch();
+    assert_eq!(location(&response).as_deref(), Some("/login"));
+}
+
+#[test]
+fn sessions_expire_absolutely() {
+    let figment = figment("sqlite::memory:").merge(("session_ttl_secs", 1));
+    let client = Client::tracked(super::build(figment)).unwrap();
+    login(&client, "admin", "admin");
+    assert_eq!(
+        client.get("/json/account_info").dispatch().status(),
+        Status::Ok
+    );
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    assert_eq!(
+        client.get("/json/account_info").dispatch().status(),
+        Status::Unauthorized
+    );
+    assert_eq!(
+        location(&client.get("/user_banking").dispatch()).as_deref(),
+        Some("/login")
+    );
+}
+
+#[test]
+fn idle_sessions_expire_but_activity_keeps_them_alive() {
+    let figment = figment("sqlite::memory:").merge(("session_idle_secs", 1));
+    let client = Client::tracked(super::build(figment)).unwrap();
+    login(&client, "admin", "admin");
+    // Activity every 0.5s keeps the session alive past the 1s idle limit.
+    for _ in 0..4 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert_eq!(
+            client.get("/json/account_info").dispatch().status(),
+            Status::Ok
+        );
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    assert_eq!(
+        client.get("/json/account_info").dispatch().status(),
+        Status::Unauthorized
+    );
+}
+
+#[test]
+fn expired_sessions_are_purged_on_login() {
+    let (url, _dir) = file_db(&[]);
+    let short = figment(&url).merge(("session_ttl_secs", 1));
+    let client = Client::tracked(super::build(short)).unwrap();
+    login(&client, "admin", "admin");
+    let other =
+        Client::tracked(super::build(figment(&url).merge(("session_ttl_secs", 1)))).unwrap();
+    login(&other, "admin", "admin");
+    assert_eq!(session_count(&client), 2);
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    login(&client, "admin", "admin");
+    assert_eq!(session_count(&client), 1, "expired rows removed");
+}
+
+#[test]
+fn logged_in_users_visiting_login_go_to_their_account() {
+    let client = client();
+    login(&client, "admin", "admin");
+    let response = client.get("/login").dispatch();
+    assert_eq!(location(&response).as_deref(), Some("/user_banking"));
 }

@@ -16,7 +16,7 @@ use crate::money::Cents;
 pub type Db = SqlitePool;
 
 /// Application settings read from Rocket's configuration.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(crate = "rocket::serde")]
 pub struct AppConfig {
     /// e.g. `sqlite://bestbank.db` or `sqlite::memory:`.
@@ -28,6 +28,27 @@ pub struct AppConfig {
     /// Allow new users to sign up at `/register`.
     #[serde(default = "default_true")]
     pub allow_registration: bool,
+    /// Absolute session lifetime in seconds (default 8 hours).
+    #[serde(default = "default_session_ttl")]
+    pub session_ttl_secs: u64,
+    /// Sessions idle for longer than this (seconds) expire (default 30 min).
+    #[serde(default = "default_session_idle")]
+    pub session_idle_secs: u64,
+    /// How often open websockets re-check their session (seconds).
+    #[serde(default = "default_session_check")]
+    pub session_check_secs: u64,
+}
+
+fn default_session_ttl() -> u64 {
+    8 * 60 * 60
+}
+
+fn default_session_idle() -> u64 {
+    30 * 60
+}
+
+fn default_session_check() -> u64 {
+    15
 }
 
 fn default_database_url() -> String {

@@ -17,6 +17,7 @@ mod hashing;
 mod login;
 mod money;
 mod register;
+mod sessions;
 mod telemetry;
 
 use rocket::figment::Figment;
@@ -68,6 +69,8 @@ fn build(figment: Figment) -> Rocket<Build> {
                 login::index,
                 login::login,
                 login::logout,
+                login::logout_all,
+                login::logout_all_anonymous,
                 login::login_user,
                 login::login_page,
                 register::register_page,

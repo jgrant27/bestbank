@@ -11,6 +11,11 @@ database_url = "sqlite://bestbank.db"
 seed_demo_admin = true
 # Allow sign-ups at /register.
 allow_registration = true
+# Server-side sessions: absolute lifetime, idle timeout, and how often open
+# websockets re-check that their session is still live (all in seconds).
+session_ttl_secs = 28800
+session_idle_secs = 1800
+session_check_secs = 15
 
 [debug]
 port = 8080
