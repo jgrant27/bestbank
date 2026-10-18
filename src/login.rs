@@ -40,7 +40,7 @@ impl<'r> FromRequest<'r> for User {
             .get_private(SESSION_COOKIE)
             .map(|cookie| cookie.value().to_owned());
         let exists = match (&name, request.rocket().state::<Mutex<Storage>>()) {
-            (Some(name), Some(state)) => state.lock().unwrap().credentials.contains_key(name),
+            (Some(name), Some(state)) => crate::storage::lock(state).credentials.contains_key(name),
             _ => false,
         };
         name.filter(|_| exists)
@@ -55,10 +55,12 @@ pub fn login(
     jar: &CookieJar<'_>,
     login: Form<Login>,
 ) -> Result<Redirect, Flash<Redirect>> {
-    let storage = state.lock().unwrap();
-    if storage.credentials.contains_key(&login.username)
-        && *storage.credentials.get(&login.username).unwrap()
-            == crate::hashing::calculate_hash(&login.password).to_string()
+    let storage = crate::storage::lock(state);
+    let expected = crate::hashing::calculate_hash(&login.password).to_string();
+    if storage
+        .credentials
+        .get(&login.username)
+        .is_some_and(|hash| *hash == expected)
     {
         jar.add_private(Cookie::new(SESSION_COOKIE, login.username.clone()));
         Ok(Redirect::to(uri!(crate::banking::user_banking)))

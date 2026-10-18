@@ -28,7 +28,7 @@ use rocket_dyn_templates::Template;
 #[get("/dump")]
 fn dump(state: &State<Mutex<storage::Storage>>, user: login::User) -> String {
     if "admin" == user.name {
-        format!("{:?}", state.lock().unwrap())
+        format!("{:?}", *storage::lock(state))
     } else {
         format!("{:?}", "Only admin can do this.")
     }

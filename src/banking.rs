@@ -19,8 +19,8 @@ pub fn user_banking_login() -> Redirect {
 
 #[get("/user_banking")]
 pub fn user_banking(state: &State<Mutex<Storage>>, user: User) -> Template {
-    let storage = state.lock().unwrap();
-    let transactions = storage.transactions.get(&user.name).unwrap();
+    let storage = crate::storage::lock(state);
+    let transactions = storage.transactions.get(&user.name).map_or(&[][..], Vec::as_slice);
     let balance = transactions.iter().fold(0.0, |sum, (_, amount)| sum + *amount);
     let mut context = HashMap::new();
     context.insert("user_name", user.name);
@@ -31,8 +31,8 @@ pub fn user_banking(state: &State<Mutex<Storage>>, user: User) -> Template {
 
 #[get("/json/account_info")]
 pub fn account_info(state: &State<Mutex<Storage>>, user: User) -> Value {
-    let storage = state.lock().unwrap();
-    let transactions = storage.transactions.get(&user.name).unwrap();
+    let storage = crate::storage::lock(state);
+    let transactions = storage.transactions.get(&user.name).map_or(&[][..], Vec::as_slice);
     let mut transactions_json: Vec<(String, &f64)> = transactions.iter().map(|(datetime, amount)| {
         (datetime.to_rfc2822(), amount)
     }).collect();
@@ -53,8 +53,8 @@ pub struct Payload {
 #[post("/json/withdraw", data = "<payload>")]
 pub fn withdraw(payload: Json<Payload>,
                 state: &State<Mutex<Storage>>, user: User) -> Value {
-    let mut storage = state.lock().unwrap();
-    let transactions = storage.transactions.get_mut(&user.name).unwrap();
+    let mut storage = crate::storage::lock(state);
+    let transactions = storage.transactions.entry(user.name).or_default();
     let balance = transactions.iter().fold(0.0, |sum, (_, amount)| sum + *amount);
     if balance >= payload.amount {
         if payload.amount <= 0.0 {
@@ -74,8 +74,8 @@ pub fn withdraw(payload: Json<Payload>,
 #[post("/json/deposit", data = "<payload>")]
 pub fn deposit(payload: Json<Payload>,
                state: &State<Mutex<Storage>>, user: User) -> Value {
-    let mut storage = state.lock().unwrap();
-    let transactions = storage.transactions.get_mut(&user.name).unwrap();
+    let mut storage = crate::storage::lock(state);
+    let transactions = storage.transactions.entry(user.name).or_default();
     if payload.amount > 0.0 {
         send_ws_evt("deposit", payload.amount.clone());
         transactions.push((Utc::now(), payload.amount));
