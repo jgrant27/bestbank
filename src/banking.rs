@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::events::Events;
 use crate::login::User;
 use crate::money::{Cents, format_cents, parse_amount};
 use crate::storage::{self, SharedStorage};
@@ -71,20 +72,22 @@ fn validate(payload: Result<Json<Payload>, json::Error<'_>>) -> Result<Cents, Ap
 pub fn withdraw(
     payload: Result<Json<Payload>, json::Error<'_>>,
     state: &State<SharedStorage>,
+    events: &State<Events>,
     user: User,
 ) -> ApiResponse {
     let cents = match validate(payload) {
         Ok(cents) => cents,
         Err(resp) => return resp,
     };
+    let user_name = user.name;
     let mut storage = storage::lock(state);
-    let transactions = storage.transactions.entry(user.name).or_default();
+    let transactions = storage.transactions.entry(user_name.clone()).or_default();
     if balance_of(transactions) < cents {
         return failure(Status::UnprocessableEntity, "Insufficient funds available.");
     }
     transactions.push((Utc::now(), -cents));
     drop(storage);
-    send_ws_evt("withdrawal", cents);
+    events.publish(&user_name, format!("Successful withdrawal for 💵{}", format_cents(cents)));
     (Status::Ok, json!({ "success": true }))
 }
 
@@ -92,32 +95,21 @@ pub fn withdraw(
 pub fn deposit(
     payload: Result<Json<Payload>, json::Error<'_>>,
     state: &State<SharedStorage>,
+    events: &State<Events>,
     user: User,
 ) -> ApiResponse {
     let cents = match validate(payload) {
         Ok(cents) => cents,
         Err(resp) => return resp,
     };
+    let user_name = user.name;
     let mut storage = storage::lock(state);
-    let transactions = storage.transactions.entry(user.name).or_default();
+    let transactions = storage.transactions.entry(user_name.clone()).or_default();
     if balance_of(transactions).checked_add(cents).is_none() {
         return failure(Status::UnprocessableEntity, "Balance limit exceeded.");
     }
     transactions.push((Utc::now(), cents));
     drop(storage);
-    send_ws_evt("deposit", cents);
+    events.publish(&user_name, format!("Successful deposit for 💵{}", format_cents(cents)));
     (Status::Ok, json!({ "success": true }))
-}
-
-pub fn send_ws_evt(ttype: &'static str, cents: Cents) {
-    use std::thread;
-    use ws::{CloseCode, connect};
-    let amount = format_cents(cents);
-    thread::spawn(move || {
-        connect("ws://0.0.0.0:8081", |out| {
-            out.send(format!("Successful {ttype} for 💵{amount}")).unwrap();
-            move |_msg| out.close(CloseCode::Normal)
-        })
-        .unwrap();
-    });
 }

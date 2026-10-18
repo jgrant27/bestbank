@@ -12,6 +12,7 @@ extern crate serde_derive;
 mod tests;
 
 mod banking;
+mod events;
 mod hashing;
 mod login;
 mod money;
@@ -47,13 +48,6 @@ fn rocket() -> _ {
         transactions,
     };
 
-    //use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    //let socket = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8081);
-
-    // Start WebSocket listener
-    std::thread::spawn(move ||
-                       ws::listen("0.0.0.0:8081", |out| move |msg| {
-                           out.broadcast(msg) }).unwrap());
     // static_response_handler! {
     //     "/favicon.ico" => favicon => "/static/favicon.ico",
     // }
@@ -75,9 +69,11 @@ fn rocket() -> _ {
                 dump,
                 account_info,
                 withdraw,
-                deposit
+                deposit,
+                events::ws
             ],
         )
         .manage(Mutex::new(storage))
+        .manage(events::Events::default())
 
 }

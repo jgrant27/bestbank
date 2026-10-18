@@ -23,7 +23,9 @@
           if ("WebSocket" in window) {
               //alert("WebSocket is supported by your Browser!");
               // Open a web socket
-              var ws = new WebSocket("ws://127.0.0.1:8081/");
+              // Same origin as the page; the session cookie authenticates us.
+              var scheme = window.location.protocol === "https:" ? "wss://" : "ws://";
+              var ws = new WebSocket(scheme + window.location.host + "/ws");
               // ws.onopen = function() {
               //     // Web Socket is connected, send data using send()
               //     ws.send("Message to send");
