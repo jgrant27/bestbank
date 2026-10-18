@@ -16,6 +16,7 @@ mod db;
 mod events;
 mod hashing;
 mod headers;
+mod health;
 mod login;
 mod money;
 mod ratelimit;
@@ -101,6 +102,7 @@ fn build(figment: Figment) -> Rocket<Build> {
                 banking::transfer,
                 events::ws,
                 csrf::token,
+                health::healthz,
                 dump,
             ],
         )
@@ -112,8 +114,24 @@ fn build(figment: Figment) -> Rocket<Build> {
         .manage(events::Events::default())
 }
 
-#[launch]
-fn rocket() -> _ {
+#[rocket::main]
+async fn main() -> std::process::ExitCode {
+    // `bestbank healthcheck`: probe a running server (used by the container
+    // HEALTHCHECK; the runtime image has no curl or shell).
+    match std::env::args().nth(1).as_deref() {
+        None => {}
+        Some("healthcheck") => return health::probe(),
+        Some(other) => {
+            eprintln!("unknown argument {other:?}\nusage: bestbank [healthcheck]");
+            return std::process::ExitCode::from(2);
+        }
+    }
     telemetry::init();
-    build(rocket::Config::figment())
+    match build(rocket::Config::figment()).launch().await {
+        Ok(_) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::error!("{}", e.pretty_print());
+            std::process::ExitCode::FAILURE
+        }
+    }
 }

@@ -34,6 +34,14 @@ allowed_origins = []
 [debug]
 port = 8080
 
+# Used by the Docker image (ROCKET_PROFILE=container; see Dockerfile and
+# docker-compose.yml). Plain HTTP on 8000 (terminate TLS in a reverse proxy,
+# or mount a cert and set ROCKET_TLS), database on the /data volume. Like any
+# non-debug profile it refuses to start without ROCKET_SECRET_KEY.
+[container]
+port = 8000
+database_url = "sqlite:///data/bestbank.db"
+
 [release]
 port = 8443
 # A `secret_key` is REQUIRED in release because sessions use encrypted

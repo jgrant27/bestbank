@@ -33,7 +33,9 @@ pub fn init() {
     let json = std::env::var("BESTBANK_LOG_FORMAT").is_ok_and(|v| v.eq_ignore_ascii_case("json"));
     let builder = tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_target(true);
+        .with_target(true)
+        // No colour codes when logs go to a file, a pipe or `docker logs`.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()));
     let result = if json {
         builder.json().flatten_event(true).try_init()
     } else {
@@ -123,6 +125,9 @@ impl Fairing for RequestLogger {
         let client_ip = request.client_ip().map(|ip| ip.to_string());
         if status >= 500 {
             tracing::error!(target: "bestbank::http", request_id = %id, method, path, status, latency_us, client_ip, "request failed");
+        } else if path == "/healthz" {
+            // Container health checks hit this every few seconds.
+            tracing::debug!(target: "bestbank::http", request_id = %id, method, path, status, latency_us, client_ip, "request");
         } else {
             tracing::info!(target: "bestbank::http", request_id = %id, method, path, status, latency_us, client_ip, "request");
         }

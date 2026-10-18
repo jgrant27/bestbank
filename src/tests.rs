@@ -1,4 +1,5 @@
 use rocket::figment::Figment;
+use rocket::figment::providers::{Format, Toml};
 use rocket::http::{ContentType, Cookie, SameSite, Status};
 use rocket::local::blocking::{Client, LocalResponse};
 use rocket::serde::json::Value;
@@ -1847,4 +1848,66 @@ fn rate_limited_login_page_has_a_working_csrf_token() {
         .expect("csrf token in the form")
         .to_owned();
     assert_eq!(token, csrf(&client));
+}
+
+#[test]
+fn healthz_reports_ok_without_login() {
+    let client = client();
+    let response = client.get("/healthz").dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    assert_eq!(response.into_string().as_deref(), Some("ok"));
+}
+
+#[rocket::async_test]
+async fn healthz_reports_database_outage() {
+    use rocket::local::asynchronous::Client as AsyncClient;
+    let client = AsyncClient::untracked(super::build(figment("sqlite::memory:")))
+        .await
+        .unwrap();
+    client.rocket().state::<db::Db>().unwrap().close().await;
+    let response = client.get("/healthz").dispatch().await;
+    assert_eq!(response.status(), Status::ServiceUnavailable);
+}
+
+/// The figment the Docker image uses (`ROCKET_PROFILE=container`), from
+/// `Rocket.toml` only, so a `ROCKET_SECRET_KEY` in the test environment
+/// can't affect the result.
+fn container_figment() -> Figment {
+    Figment::from(rocket::Config::default())
+        .merge(Toml::file("Rocket.toml").nested())
+        .select("container")
+        .merge(("database_url", "sqlite::memory:"))
+}
+
+#[rocket::async_test]
+async fn container_profile_requires_a_secret_key() {
+    let figment = container_figment();
+    let config = rocket::Config::try_from(&figment).unwrap();
+    assert_eq!(config.port, 8000);
+    assert!(!config.tls_enabled(), "no TLS in the container profile");
+    assert!(
+        rocket::Config::try_from(rocket::Config::figment().select("release"))
+            .unwrap()
+            .tls_enabled(),
+        "release profile keeps TLS"
+    );
+    assert_eq!(
+        Figment::from(Toml::file("Rocket.toml").nested())
+            .select("container")
+            .extract_inner::<String>("database_url")
+            .unwrap(),
+        "sqlite:///data/bestbank.db"
+    );
+    // No key: refuses to start (nothing is baked into the image).
+    let error = super::build(figment.clone()).ignite().await.unwrap_err();
+    assert!(
+        matches!(error.kind(), rocket::error::ErrorKind::InsecureSecretKey(_)),
+        "{error:?}"
+    );
+    error.pretty_print();
+    // With a generated key it starts.
+    let mut key = [0u8; 64];
+    getrandom::fill(&mut key).unwrap();
+    let figment = figment.merge(("secret_key", key.to_vec()));
+    assert!(super::build(figment).ignite().await.is_ok());
 }

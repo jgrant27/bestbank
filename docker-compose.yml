@@ -1,0 +1,39 @@
+# Run the demo with a persistent database:
+#
+#   export ROCKET_SECRET_KEY="$(openssl rand -base64 32)"   # or put it in .env
+#   docker compose up --build
+#
+# then open http://localhost:8000 (log in as admin/admin or register).
+# Compose refuses to start if ROCKET_SECRET_KEY isn't set; nothing is baked
+# into the image. Keep the same key across restarts or everyone is logged out.
+
+services:
+  bestbank:
+    build: .
+    image: bestbank:latest
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      ROCKET_SECRET_KEY: ${ROCKET_SECRET_KEY:?set ROCKET_SECRET_KEY, e.g. export ROCKET_SECRET_KEY="$(openssl rand -base64 32)"}
+      # Uncomment to disable the demo admin/admin account or sign-ups:
+      # ROCKET_SEED_DEMO_ADMIN: "false"
+      # ROCKET_ALLOW_REGISTRATION: "false"
+      # Behind a reverse proxy that sets X-Real-IP and rewrites Host:
+      # ROCKET_IP_HEADER: X-Real-IP
+      # ROCKET_ALLOWED_ORIGINS: '["https://bank.example"]'
+      # More logging, or one JSON object per line:
+      # RUST_LOG: debug
+      # BESTBANK_LOG_FORMAT: json
+    volumes:
+      - bestbank-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  bestbank-data:

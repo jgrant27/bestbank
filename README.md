@@ -67,6 +67,41 @@ Configuration lives in `Rocket.toml` (`[default]`, `[debug]`, `[release]`,
 `[release.tls]`); any value can be overridden with `ROCKET_*` environment
 variables.
 
+### Run it in Docker
+
+```
+export ROCKET_SECRET_KEY="$(openssl rand -base64 32)"   # or put it in .env
+docker compose up --build
+```
+
+Then open http://localhost:8000. The image is a multi-stage build: compiled
+in `rust:slim`, shipped on distroless `cc-debian13` (about 40 MB, no shell),
+running as the unprivileged `nonroot` user with the `container` profile from
+`Rocket.toml` (plain HTTP on port 8000, database at `/data/bestbank.db`).
+
+- **No secret key is baked in.** Compose won't start without
+  `ROCKET_SECRET_KEY`, and the container exits if it's missing. Keep the same
+  key across restarts, or existing sessions stop working.
+- The database lives on the `bestbank-data` volume, so it survives restarts
+  and rebuilds (`docker compose down -v` deletes it).
+- Compose runs the container with a read-only root filesystem, all
+  capabilities dropped and `no-new-privileges`, and publishes the port on
+  127.0.0.1 only.
+- `GET /healthz` returns `ok` when the app and database are up. The image's
+  `HEALTHCHECK` runs `bestbank healthcheck`, which probes it.
+- It serves plain HTTP: put a TLS-terminating reverse proxy in front of it
+  (then set `ROCKET_IP_HEADER` and `ROCKET_ALLOWED_ORIGINS`, see the comments
+  in `docker-compose.yml`). If you mount a certificate and set `ROCKET_TLS`
+  instead, the health check only tests that the port accepts connections.
+
+Without Compose:
+
+```
+docker build -t bestbank .
+docker run --rm -p 127.0.0.1:8000:8000 -v bestbank-data:/data \
+    -e ROCKET_SECRET_KEY="$(openssl rand -base64 32)" bestbank
+```
+
 ### Log in / register
 
 A demo account is seeded at startup: **admin / admin** (disable with
@@ -97,6 +132,7 @@ Set `allow_registration = false` in `Rocket.toml` (or
 | POST   | `/json/transfer`     | user  | JSON `{"to": "bob", "amount": 12.34}` + `X-CSRF-Token` |
 | GET    | `/ws`                | user  | WebSocket: your own transaction events    |
 | GET    | `/json/csrf`         | –     | Current CSRF token (for API clients)      |
+| GET    | `/healthz`           | –     | `ok` if the app and database are up (else 503) |
 | GET    | `/dump`              | admin | Users, balances, transaction counts (JSON) |
 | GET    | `/static/*`          | –     | Static files (favicon, CSS, JS)           |
 

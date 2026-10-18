@@ -143,7 +143,7 @@ impl Browser {
 }
 
 /// Launch the app on a free local port with an in-memory database.
-async fn launch() -> (u16, rocket::Shutdown) {
+pub(crate) async fn launch() -> (u16, rocket::Shutdown) {
     launch_with(&[]).await
 }
 
