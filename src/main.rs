@@ -9,46 +9,56 @@ extern crate rocket;
 mod tests;
 
 mod banking;
+mod db;
 mod events;
 mod hashing;
 mod login;
 mod money;
-mod storage;
 mod telemetry;
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-
-use rocket::fs::{FileServer, relative};
+use rocket::figment::Figment;
+use rocket::fs::FileServer;
 use rocket::http::Status;
+use rocket::serde::json::{Value, json};
 use rocket::{Build, Rocket, State};
 use rocket_dyn_templates::Template;
 
-use storage::{SharedStorage, Storage};
+use db::Db;
 
-/// Debug dump of all storage. Admin only.
+/// Debug dump of users and balances. Admin only. (Password hashes are not
+/// included.)
 #[get("/dump")]
-fn dump(state: &State<SharedStorage>, user: login::User) -> Result<String, Status> {
-    if user.name == "admin" {
-        Ok(format!("{:?}", *storage::lock(state)))
-    } else {
-        Err(Status::Forbidden)
+async fn dump(db: &State<Db>, user: login::User) -> Result<Value, Status> {
+    if user.name != "admin" {
+        return Err(Status::Forbidden);
     }
+    let mut users = Vec::new();
+    for (id, username) in db::list_users(db)
+        .await
+        .map_err(|e| banking::db_error(&e))?
+    {
+        let balance = db::balance(db, id)
+            .await
+            .map_err(|e| banking::db_error(&e))?;
+        let transactions = db::transactions(db, id)
+            .await
+            .map_err(|e| banking::db_error(&e))?;
+        users.push(json!({
+            "username": username,
+            "balance": money::format_cents(balance),
+            "transactions": transactions.len(),
+        }));
+    }
+    Ok(json!({ "users": users }))
 }
 
-/// Seed the in-memory store with the demo `admin`/`admin` account.
-fn demo_storage() -> Storage {
-    Storage {
-        credentials: HashMap::from([(String::from("admin"), hashing::hash_password("admin"))]),
-        transactions: HashMap::from([(String::from("admin"), Vec::new())]),
-    }
-}
-
-/// Build the Rocket instance around the given storage.
-fn build(storage: Storage) -> Rocket<Build> {
-    rocket::build()
+/// Build the Rocket instance from a configuration figment (so tests can
+/// point `database_url` at a throwaway database).
+fn build(figment: Figment) -> Rocket<Build> {
+    rocket::custom(figment)
         .attach(telemetry::RequestLogger)
         .attach(Template::fairing())
+        .attach(db::stage())
         .mount(
             "/",
             routes![
@@ -67,14 +77,14 @@ fn build(storage: Storage) -> Rocket<Build> {
             ],
         )
         // Static assets (favicon). Mounted under /static so its 404s don't
-        // mask the 401s from guarded routes.
-        .mount("/static", FileServer::from(relative!("static")))
-        .manage(Mutex::new(storage))
+        // mask the 401s from guarded routes. Path is relative to the working
+        // directory (like `templates/`).
+        .mount("/static", FileServer::from("static"))
         .manage(events::Events::default())
 }
 
 #[launch]
 fn rocket() -> _ {
     telemetry::init();
-    build(demo_storage())
+    build(rocket::Config::figment())
 }

@@ -4,6 +4,11 @@
 
 [default]
 address = "0.0.0.0"
+# SQLite database (created on first start; migrations run automatically).
+# Override with ROCKET_DATABASE_URL, e.g. "sqlite::memory:" for a throwaway DB.
+database_url = "sqlite://bestbank.db"
+# Seed the demo admin/admin account when it doesn't exist.
+seed_demo_admin = true
 
 [debug]
 port = 8080

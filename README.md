@@ -7,14 +7,15 @@ that demonstrates:
 - Login / logout with an **encrypted, authenticated session cookie** (Rocket
   private cookies, `HttpOnly`, `SameSite=Strict`) and Argon2id password hashes.
 - Request guards, request ranking, managed state and flash messages.
-- In-memory application storage (lost on restart) behind a poison-tolerant
-  `Mutex`, with money stored as integer cents.
+- SQLite persistence via [`sqlx`](https://github.com/launchbadge/sqlx) with
+  embedded migrations, with money stored as integer cents and atomic,
+  overdraft-safe withdrawals.
 - Handlebars templates populated from JSON endpoints.
 - Authenticated, per-user WebSocket notifications (`rocket_ws`) on the same
   port as the app.
 
 > **This is a demo, not a real bank.** It has a hard-coded demo account, no
-> persistence, no rate limiting and no user registration. See
+> rate limiting and no user registration. See
 > [Security notes](#security-notes).
 
 ### Install Rust
@@ -30,6 +31,17 @@ cargo run
 Then open <http://localhost:8080>. The debug profile listens on port 8080 and
 generates a throwaway secret key on each start (so sessions don't survive a
 restart).
+
+### Database
+
+Data is stored in SQLite at `bestbank.db` in the working directory (see
+`database_url` in `Rocket.toml`). Migrations in `migrations/` are compiled
+into the binary and applied on startup. Delete the file to start over, or run
+with a throwaway in-memory database:
+
+```
+ROCKET_DATABASE_URL=sqlite::memory: cargo run
+```
 
 ### Run it behind TLS
 
@@ -66,7 +78,7 @@ A single demo account is seeded at startup: **admin / admin**.
 | POST   | `/json/deposit`      | user  | JSON `{"amount": 12.34}`                  |
 | POST   | `/json/withdraw`     | user  | JSON `{"amount": 12.34}`                  |
 | GET    | `/ws`                | user  | WebSocket: your own transaction events    |
-| GET    | `/dump`              | admin | Debug dump of storage                     |
+| GET    | `/dump`              | admin | Users, balances, transaction counts (JSON) |
 | GET    | `/static/*`          | –     | Static files (favicon)                    |
 
 Amounts must be positive, have at most two decimal places and be at most
@@ -114,4 +126,3 @@ What it doesn't do (fine for a demo, not for production):
 - No login rate limiting or account lockout.
 - No CSRF tokens (relies on `SameSite`); login CSRF is not prevented.
 - Sessions have no server-side revocation; logout only deletes the cookie.
-- Everything is in memory and lost on restart.

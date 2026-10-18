@@ -1,34 +1,46 @@
-use std::collections::HashMap;
-
+use rocket::figment::Figment;
 use rocket::http::{ContentType, Cookie, SameSite, Status};
 use rocket::local::blocking::{Client, LocalResponse};
 use rocket::serde::json::Value;
+use tempfile::TempDir;
 
+use crate::db;
 use crate::hashing::hash_password;
 use crate::login::SESSION_COOKIE;
-use crate::storage::Storage;
 
-/// Storage with the given `(user, password)` accounts. Only users listed in
-/// `with_history` get a transaction history entry.
-fn storage(users: &[(&str, &str)], with_history: &[&str]) -> Storage {
-    Storage {
-        credentials: users
-            .iter()
-            .map(|(u, p)| ((*u).to_owned(), hash_password(p)))
-            .collect(),
-        transactions: with_history
-            .iter()
-            .map(|u| ((*u).to_owned(), Vec::new()))
-            .collect::<HashMap<_, _>>(),
-    }
+/// App config pointing at `database_url`.
+fn figment(database_url: &str) -> Figment {
+    rocket::Config::figment().merge(("database_url", database_url))
 }
 
+/// App with a fresh in-memory database (demo admin seeded).
 fn client() -> Client {
-    Client::tracked(super::build(super::demo_storage())).expect("valid rocket instance")
+    Client::tracked(super::build(figment("sqlite::memory:"))).expect("valid rocket instance")
 }
 
-fn client_with(storage: Storage) -> Client {
-    Client::tracked(super::build(storage)).expect("valid rocket instance")
+/// A file-backed database in a temp dir, pre-populated with `users`.
+/// Keep the `TempDir` alive for as long as the database is used.
+fn file_db(users: &[(&str, &str)]) -> (String, TempDir) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let url = format!("sqlite://{}", dir.path().join("test.db").display());
+    let runtime = rocket::tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let pool = db::connect(&url).await.expect("connect");
+        for (user, password) in users {
+            db::create_user(&pool, user, &hash_password(password))
+                .await
+                .expect("create user");
+        }
+        pool.close().await;
+    });
+    (url, dir)
+}
+
+/// App backed by a file database containing `users` (plus the demo admin).
+fn client_with_users(users: &[(&str, &str)]) -> (Client, TempDir) {
+    let (url, dir) = file_db(users);
+    let client = Client::tracked(super::build(figment(&url))).expect("valid rocket instance");
+    (client, dir)
 }
 
 fn login<'c>(client: &'c Client, user: &str, password: &str) -> LocalResponse<'c> {
@@ -151,7 +163,7 @@ fn good_login_works_and_logout_ends_session() {
 
 #[test]
 fn forged_plain_cookie_is_rejected() {
-    let client = Client::untracked(super::build(super::demo_storage())).unwrap();
+    let client = Client::untracked(super::build(figment("sqlite::memory:"))).unwrap();
     let forged = || Cookie::new(SESSION_COOKIE, "admin");
 
     let response = client.get("/dump").cookie(forged()).dispatch();
@@ -175,10 +187,7 @@ fn forged_plain_cookie_is_rejected() {
 
 #[test]
 fn dump_is_admin_only() {
-    let client = client_with(storage(
-        &[("admin", "admin"), ("alice", "pw")],
-        &["admin", "alice"],
-    ));
+    let (client, _dir) = client_with_users(&[("alice", "pw")]);
     login(&client, "alice", "pw");
     assert_eq!(client.get("/dump").dispatch().status(), Status::Forbidden);
 }
@@ -267,9 +276,9 @@ fn withdraw_validation_and_overdraft() {
 
 #[test]
 fn user_without_history_does_not_panic() {
-    // "bob" can log in but has no transaction history entry; this used to
-    // panic on `.unwrap()` and poison the storage mutex.
-    let client = client_with(storage(&[("admin", "admin"), ("bob", "pw")], &["admin"]));
+    // "bob" has no transactions yet; this used to panic on `.unwrap()` and
+    // poison the in-memory storage mutex.
+    let (client, _dir) = client_with_users(&[("bob", "pw")]);
     login(&client, "bob", "pw");
     assert_eq!(client.get("/user_banking").dispatch().status(), Status::Ok);
     assert_eq!(balance(&client), "0.00");
@@ -304,7 +313,7 @@ fn valid_session_for_unknown_user_is_rejected_and_app_keeps_working() {
 
 #[test]
 fn websocket_requires_login() {
-    let client = Client::untracked(super::build(super::demo_storage())).unwrap();
+    let client = Client::untracked(super::build(figment("sqlite::memory:"))).unwrap();
     let response = client
         .get("/ws")
         .header(rocket::http::Header::new("Connection", "Upgrade"))
@@ -366,4 +375,127 @@ fn valid_incoming_request_id_is_reused_and_bogus_one_replaced() {
     let replaced = send("bad id!");
     assert_ne!(replaced, "bad id!");
     assert_eq!(replaced.len(), 16);
+}
+
+#[test]
+fn dump_lists_users_without_password_hashes() {
+    let (client, _dir) = client_with_users(&[("alice", "pw")]);
+    login(&client, "admin", "admin");
+    let response = client.get("/dump").dispatch();
+    assert_eq!(response.status(), Status::Ok);
+    let body = response.into_string().unwrap();
+    assert!(body.contains("\"admin\"") && body.contains("\"alice\""));
+    assert!(!body.contains("argon2"), "hashes must not be dumped");
+}
+
+#[test]
+fn data_persists_across_restarts() {
+    let (url, _dir) = file_db(&[]);
+    {
+        let client = Client::tracked(super::build(figment(&url))).unwrap();
+        login(&client, "admin", "admin");
+        assert_eq!(
+            post_json(&client, "/json/deposit", r#"{"amount": 42.42}"#).0,
+            Status::Ok
+        );
+    }
+    // A brand new app instance (new secret key, so log in again).
+    let client = Client::tracked(super::build(figment(&url))).unwrap();
+    login(&client, "admin", "admin");
+    assert_eq!(balance(&client), "42.42");
+    let info: Value = client
+        .get("/json/account_info")
+        .dispatch()
+        .into_json()
+        .unwrap();
+    assert_eq!(info["transactions"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn migrations_are_applied_once() {
+    let (url, _dir) = file_db(&[]);
+    // Opening the database again must not re-run or fail on migrations.
+    let runtime = rocket::tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let pool = db::connect(&url).await.expect("reconnect");
+        let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(applied, 1);
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('users', 'transactions') ORDER BY name",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tables, ["transactions", "users"]);
+    });
+}
+
+#[test]
+fn usernames_are_case_insensitive_unique() {
+    let (url, _dir) = file_db(&[("Carol", "pw")]);
+    let runtime = rocket::tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let pool = db::connect(&url).await.unwrap();
+        assert!(db::create_user(&pool, "carol", "x").await.is_err());
+        assert!(db::find_user(&pool, "CAROL").await.unwrap().is_some());
+    });
+}
+
+#[rocket::async_test]
+async fn concurrent_withdrawals_cannot_overdraw() {
+    use rocket::local::asynchronous::Client as AsyncClient;
+
+    let (url, _dir) = rocket::tokio::task::spawn_blocking(|| file_db(&[]))
+        .await
+        .unwrap();
+    let client = AsyncClient::tracked(super::build(figment(&url)))
+        .await
+        .unwrap();
+    client
+        .post("/login")
+        .header(ContentType::Form)
+        .body("username=admin&password=admin")
+        .dispatch()
+        .await;
+    let response = client
+        .post("/json/deposit")
+        .header(ContentType::JSON)
+        .body(r#"{"amount": 10}"#)
+        .dispatch()
+        .await;
+    assert_eq!(response.status(), Status::Ok);
+
+    // 25 concurrent $1 withdrawals against a $10 balance.
+    let attempts = (0..25).map(|_| async {
+        client
+            .post("/json/withdraw")
+            .header(ContentType::JSON)
+            .body(r#"{"amount": 1}"#)
+            .dispatch()
+            .await
+            .status()
+    });
+    let statuses = rocket::futures::future::join_all(attempts).await;
+    let ok = statuses.iter().filter(|s| **s == Status::Ok).count();
+    assert_eq!(
+        ok, 10,
+        "exactly the funded withdrawals succeed: {statuses:?}"
+    );
+    assert!(
+        statuses
+            .iter()
+            .all(|s| *s == Status::Ok || *s == Status::UnprocessableEntity)
+    );
+
+    let info: Value = client
+        .get("/json/account_info")
+        .dispatch()
+        .await
+        .into_json()
+        .await
+        .unwrap();
+    assert_eq!(info["balance"], "0.00");
 }

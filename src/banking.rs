@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
+use crate::db::{self, Db};
 use crate::events::Events;
 use crate::login::User;
 use crate::money::{Cents, format_cents, parse_amount};
-use crate::storage::{self, SharedStorage};
 use crate::telemetry::RequestId;
 
 use rocket::State;
@@ -12,10 +12,10 @@ use rocket::response::Redirect;
 use rocket::serde::json::{self, Json, Value, json};
 use rocket_dyn_templates::Template;
 
-use chrono::prelude::*;
-
-fn balance_of(transactions: &[(DateTime<Utc>, Cents)]) -> Cents {
-    transactions.iter().map(|(_, amount)| amount).sum()
+/// Log a database error and turn it into a 500.
+pub fn db_error(e: &sqlx::Error) -> Status {
+    tracing::error!(error = %e, "database error");
+    Status::InternalServerError
 }
 
 #[get("/user_banking", rank = 1)]
@@ -24,35 +24,29 @@ pub fn user_banking_login() -> Redirect {
 }
 
 #[get("/user_banking")]
-pub fn user_banking(state: &State<SharedStorage>, user: User) -> Template {
-    let storage = storage::lock(state);
-    let transactions = storage
-        .transactions
-        .get(&user.name)
-        .map_or(&[][..], Vec::as_slice);
+pub async fn user_banking(db: &State<Db>, user: User) -> Result<Template, Status> {
+    let balance = db::balance(db, user.id).await.map_err(|e| db_error(&e))?;
     let mut context = HashMap::new();
-    context.insert("balance", format_cents(balance_of(transactions)));
+    context.insert("balance", format_cents(balance));
     context.insert("user_name", user.name);
-    Template::render("banking", &context)
+    Ok(Template::render("banking", &context))
 }
 
 #[get("/json/account_info")]
-pub fn account_info(state: &State<SharedStorage>, user: User) -> Value {
-    let storage = storage::lock(state);
-    let transactions = storage
-        .transactions
-        .get(&user.name)
-        .map_or(&[][..], Vec::as_slice);
+pub async fn account_info(db: &State<Db>, user: User) -> Result<Value, Status> {
+    let balance = db::balance(db, user.id).await.map_err(|e| db_error(&e))?;
+    let transactions = db::transactions(db, user.id)
+        .await
+        .map_err(|e| db_error(&e))?;
     let transactions_json: Vec<(String, String)> = transactions
         .iter()
-        .rev()
-        .map(|(datetime, amount)| (datetime.to_rfc2822(), format_cents(*amount)))
+        .map(|tx| (tx.timestamp().to_rfc2822(), format_cents(tx.amount_cents)))
         .collect();
-    json!({
+    Ok(json!({
         "user_name": user.name,
-        "balance": format_cents(balance_of(transactions)),
+        "balance": format_cents(balance),
         "transactions": transactions_json
-    })
+    }))
 }
 
 /// Request body for deposits and withdrawals. `amount` is a decimal number
@@ -68,6 +62,10 @@ fn failure(status: Status, message: &str) -> ApiResponse {
     (status, json!({ "success": false, "message": message }))
 }
 
+fn server_error(e: &sqlx::Error) -> ApiResponse {
+    failure(db_error(e), "Something went wrong, please try again.")
+}
+
 fn validate(payload: Result<Json<Payload>, json::Error<'_>>) -> Result<Cents, ApiResponse> {
     let payload = payload.map_err(|_| {
         failure(
@@ -79,9 +77,9 @@ fn validate(payload: Result<Json<Payload>, json::Error<'_>>) -> Result<Cents, Ap
 }
 
 #[post("/json/withdraw", data = "<payload>")]
-pub fn withdraw(
+pub async fn withdraw(
     payload: Result<Json<Payload>, json::Error<'_>>,
-    state: &State<SharedStorage>,
+    db: &State<Db>,
     events: &State<Events>,
     user: User,
     request_id: RequestId,
@@ -90,26 +88,23 @@ pub fn withdraw(
         Ok(cents) => cents,
         Err(resp) => return resp,
     };
-    let user_name = user.name;
-    let mut storage = storage::lock(state);
-    let transactions = storage.transactions.entry(user_name.clone()).or_default();
-    if balance_of(transactions) < cents {
-        return failure(Status::UnprocessableEntity, "Insufficient funds available.");
+    match db::withdraw(db, user.id, cents).await {
+        Ok(true) => {}
+        Ok(false) => return failure(Status::UnprocessableEntity, "Insufficient funds available."),
+        Err(e) => return server_error(&e),
     }
-    transactions.push((Utc::now(), -cents));
-    drop(storage);
-    tracing::info!(request_id = %request_id.0, username = ?user_name, cents, kind = "withdrawal", "transaction");
+    tracing::info!(request_id = %request_id.0, username = ?user.name, cents, kind = "withdrawal", "transaction");
     events.publish(
-        &user_name,
+        &user.name,
         format!("Successful withdrawal for 💵{}", format_cents(cents)),
     );
     (Status::Ok, json!({ "success": true }))
 }
 
 #[post("/json/deposit", data = "<payload>")]
-pub fn deposit(
+pub async fn deposit(
     payload: Result<Json<Payload>, json::Error<'_>>,
-    state: &State<SharedStorage>,
+    db: &State<Db>,
     events: &State<Events>,
     user: User,
     request_id: RequestId,
@@ -118,17 +113,14 @@ pub fn deposit(
         Ok(cents) => cents,
         Err(resp) => return resp,
     };
-    let user_name = user.name;
-    let mut storage = storage::lock(state);
-    let transactions = storage.transactions.entry(user_name.clone()).or_default();
-    if balance_of(transactions).checked_add(cents).is_none() {
-        return failure(Status::UnprocessableEntity, "Balance limit exceeded.");
+    match db::deposit(db, user.id, cents).await {
+        Ok(true) => {}
+        Ok(false) => return failure(Status::UnprocessableEntity, "Balance limit exceeded."),
+        Err(e) => return server_error(&e),
     }
-    transactions.push((Utc::now(), cents));
-    drop(storage);
-    tracing::info!(request_id = %request_id.0, username = ?user_name, cents, kind = "deposit", "transaction");
+    tracing::info!(request_id = %request_id.0, username = ?user.name, cents, kind = "deposit", "transaction");
     events.publish(
-        &user_name,
+        &user.name,
         format!("Successful deposit for 💵{}", format_cents(cents)),
     );
     (Status::Ok, json!({ "success": true }))

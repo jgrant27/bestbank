@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 use rocket::State;
 use rocket::form::Form;
@@ -10,7 +9,7 @@ use rocket::response::{Flash, Redirect};
 
 use rocket_dyn_templates::Template;
 
-use crate::storage::Storage;
+use crate::db::{self, Db};
 use crate::telemetry::RequestId;
 
 /// Name of the (private, encrypted) session cookie.
@@ -24,62 +23,90 @@ pub struct Login {
 
 #[derive(Debug)]
 pub struct User {
+    pub id: i64,
     pub name: String,
 }
 
 #[rocket::async_trait]
 impl<'r> FromRequest<'r> for User {
-    type Error = std::convert::Infallible;
+    type Error = ();
 
     async fn from_request(request: &'r Request<'_>) -> request::Outcome<Self, Self::Error> {
         // The session cookie is a Rocket *private* cookie: it is encrypted and
         // authenticated with the app's secret key, so a client cannot forge or
         // tamper with it. We additionally check that the user still exists.
-        let name = request
+        let Some(name) = request
             .cookies()
             .get_private(SESSION_COOKIE)
-            .map(|cookie| cookie.value().to_owned());
-        let exists = match (&name, request.rocket().state::<Mutex<Storage>>()) {
-            (Some(name), Some(state)) => crate::storage::lock(state).credentials.contains_key(name),
-            _ => false,
+            .map(|cookie| cookie.value().to_owned())
+        else {
+            return request::Outcome::Forward(Status::Unauthorized);
         };
-        name.filter(|_| exists)
-            .map(|name| User { name })
-            .or_forward(Status::Unauthorized)
+        let Some(db) = request.rocket().state::<Db>() else {
+            return request::Outcome::Forward(Status::InternalServerError);
+        };
+        match db::find_user(db, &name).await {
+            Ok(user) => user
+                .map(|row| User {
+                    id: row.id,
+                    name: row.username,
+                })
+                .or_forward(Status::Unauthorized),
+            Err(e) => {
+                tracing::error!(error = %e, "user lookup failed");
+                request::Outcome::Error((Status::InternalServerError, ()))
+            }
+        }
     }
 }
 
 #[post("/login", data = "<login>")]
-pub fn login(
-    state: &State<Mutex<Storage>>,
+pub async fn login(
+    db: &State<Db>,
     jar: &CookieJar<'_>,
     login: Form<Login>,
     request_id: RequestId,
 ) -> Result<Redirect, Box<Flash<Redirect>>> {
-    // Copy the stored hash out so the (deliberately slow) Argon2 check
-    // runs without holding the storage lock.
-    let stored_hash = crate::storage::lock(state)
-        .credentials
-        .get(&login.username)
-        .cloned();
-    if stored_hash.is_some_and(|hash| crate::hashing::verify_password(&login.password, &hash)) {
+    let invalid = || {
+        Box::new(Flash::error(
+            Redirect::to(uri!(login_page)),
+            "Invalid username/password.",
+        ))
+    };
+    let user = db::find_user(db, &login.username).await.map_err(|e| {
+        tracing::error!(request_id = %request_id.0, error = %e, "user lookup failed");
+        Box::new(Flash::error(
+            Redirect::to(uri!(login_page)),
+            "Something went wrong, please try again.",
+        ))
+    })?;
+    let verified = match &user {
+        Some(user) => {
+            // Argon2 is deliberately slow; keep it off the async executor.
+            let (password, hash) = (login.password.clone(), user.password_hash.clone());
+            rocket::tokio::task::spawn_blocking(move || {
+                crate::hashing::verify_password(&password, &hash)
+            })
+            .await
+            .unwrap_or(false)
+        }
+        None => false,
+    };
+    if let (true, Some(user)) = (verified, user) {
         // SameSite=Strict stops browsers sending the session cookie on
         // cross-site requests, which is the CSRF protection for our POST
         // routes. HttpOnly keeps it away from page scripts.
         jar.add_private(
-            Cookie::build((SESSION_COOKIE, login.username.clone()))
+            Cookie::build((SESSION_COOKIE, user.username.clone()))
                 .http_only(true)
                 .same_site(SameSite::Strict),
         );
         // Debug-format user input so control characters can't forge log lines.
-        tracing::info!(request_id = %request_id.0, username = ?login.username, "login succeeded");
+        tracing::info!(request_id = %request_id.0, username = ?user.username, "login succeeded");
         Ok(Redirect::to(uri!(crate::banking::user_banking)))
     } else {
         tracing::warn!(request_id = %request_id.0, username = ?login.username, "login failed");
-        Err(Box::new(Flash::error(
-            Redirect::to(uri!(login_page)),
-            "Invalid username/password.",
-        )))
+        Err(invalid())
     }
 }
 
