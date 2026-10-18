@@ -1,20 +1,12 @@
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width" />
-    <title>🏦 Best Bank 🏦</title>
-    <link rel="icon" href="/static/favicon.ico" />
-    <link rel="stylesheet" href="/static/style.css" />
+{% extends "base" %}
+{% block head %}
     <meta name="csrf-token" content="{{ csrf_token }}" />
     <script src="/static/banking.js" defer></script>
-  </head>
-
-  <body>
+{%- endblock %}
+{% block body %}
     <div id="toasts" aria-live="polite"></div>
-    <h1>🏦 Best Bank 🏦</h1>
     <h2>
-      Welcome to your account <b><i><span id="name"></span></i></b>.
+      Welcome to your account <b><i><span id="name">{{ user_name }}</span></i></b>.
       <form class="inline" action="/logout" method="post" accept-charset="utf-8">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
         <input type="submit" id="logout" value="logout" />
@@ -27,7 +19,7 @@
     <table class="layout">
       <tr>
         <td class="balance" colspan="2">
-          <p>Balance: 💵 <span id="balance"></span></p>
+          <p>Balance: 💵 <span id="balance">{{ balance }}</span></p>
         </td>
       </tr>
       <tr>
@@ -56,5 +48,4 @@
         </td>
       </tr>
     </table>
-  </body>
-</html>
+{%- endblock %}

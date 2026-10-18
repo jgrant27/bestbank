@@ -1,12 +1,10 @@
 //! User registration.
 
-use std::collections::HashMap;
-
 use rocket::State;
 use rocket::form::Form;
 use rocket::request::FlashMessage;
 use rocket::response::{Flash, Redirect};
-use rocket_dyn_templates::Template;
+use rocket_dyn_templates::{Template, context};
 
 use crate::csrf::{CsrfForm, CsrfToken};
 use crate::db::{self, AppConfig, Db};
@@ -111,13 +109,14 @@ pub fn register_page(
     flash: Option<FlashMessage<'_>>,
 ) -> Option<Template> {
     registration_enabled(config)?;
-    let mut context: HashMap<&str, &str> = HashMap::new();
-    context.insert("csrf_token", &csrf.0);
-    if let Some(ref flash) = flash {
-        context.insert("flash", flash.message());
-        context.insert("flash_kind", flash.kind());
-    }
-    Some(Template::render("register", &context))
+    Some(Template::render(
+        "register",
+        context! {
+            csrf_token: csrf.0,
+            flash: flash.as_ref().map(FlashMessage::message),
+            flash_kind: flash.as_ref().map(FlashMessage::kind),
+        },
+    ))
 }
 
 #[post("/register", data = "<form>")]

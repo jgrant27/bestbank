@@ -1,0 +1,4 @@
+{#- Flash message, if any. Included by the login and register pages. -#}
+{% if flash %}
+    <p class="flash {{ flash_kind }}">{{ flash }}</p>
+{%- endif %}

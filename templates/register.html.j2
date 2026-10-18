@@ -1,18 +1,8 @@
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width" />
-    <title>🏦 Best Bank 🏦 · Register</title>
-    <link rel="icon" href="/static/favicon.ico" />
-    <link rel="stylesheet" href="/static/style.css" />
-  </head>
-  <body>
-    <h1>🏦 Best Bank 🏦</h1>
+{% extends "base" %}
+{% block subtitle %} · Register{% endblock %}
+{% block body %}
     <h2>Create an account</h2>
-    {{#if flash}}
-    <p class="flash {{ flash_kind }}">{{ flash }}</p>
-    {{/if}}
+    {% include "_flash" %}
 
     <form action="/register" method="post" accept-charset="utf-8">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
@@ -35,5 +25,4 @@
       <p><input type="submit" value="register"></p>
     </form>
     <p>Already have an account? <a href="/login">Log in</a></p>
-  </body>
-</html>
+{% endblock %}

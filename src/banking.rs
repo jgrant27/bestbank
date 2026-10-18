@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::csrf::{CsrfError, CsrfHeader, CsrfToken};
 use crate::db::{self, Db};
 use crate::events::Events;
@@ -11,7 +9,7 @@ use rocket::State;
 use rocket::http::Status;
 use rocket::response::Redirect;
 use rocket::serde::json::{self, Json, Value, json};
-use rocket_dyn_templates::Template;
+use rocket_dyn_templates::{Template, context};
 
 /// Log a database error and turn it into a 500.
 pub fn db_error(e: &sqlx::Error) -> Status {
@@ -27,11 +25,14 @@ pub fn user_banking_login() -> Redirect {
 #[get("/user_banking")]
 pub async fn user_banking(db: &State<Db>, user: User, csrf: CsrfToken) -> Result<Template, Status> {
     let balance = db::balance(db, user.id).await.map_err(|e| db_error(&e))?;
-    let mut context = HashMap::new();
-    context.insert("csrf_token", csrf.0);
-    context.insert("balance", format_cents(balance));
-    context.insert("user_name", user.name);
-    Ok(Template::render("banking", &context))
+    Ok(Template::render(
+        "banking",
+        context! {
+            csrf_token: csrf.0,
+            balance: format_cents(balance),
+            user_name: user.name,
+        },
+    ))
 }
 
 #[get("/json/account_info")]

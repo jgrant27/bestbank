@@ -9,7 +9,9 @@ argon2 = "0.6"
 chrono = "0.4"
 getrandom = "0.4"
 rocket = { version = "0.5.1", features = ["json", "secrets", "tls"] }
-rocket_dyn_templates = { version = "0.2.0", features = ["handlebars"] }
+rocket_dyn_templates = { version = "0.2.0", features = ["minijinja"] }
+# Same major version rocket_dyn_templates uses; only needed to configure the engine.
+minijinja = "2"
 rocket_ws = "0.1.1"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.11"

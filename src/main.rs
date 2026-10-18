@@ -59,6 +59,18 @@ async fn dump(db: &State<Db>, user: login::User) -> Result<Value, Status> {
     Ok(json!({ "users": users }))
 }
 
+/// The template fairing: minijinja 2 with autoescaping (on for `.html.j2`)
+/// and "semi-strict" undefined handling, so printing a variable the handler
+/// didn't provide is a render error (a 500, caught by tests) instead of
+/// silently rendering nothing. `{% if missing %}` is still allowed.
+fn templates() -> impl rocket::fairing::Fairing {
+    Template::custom(|engines| {
+        engines
+            .minijinja
+            .set_undefined_behavior(minijinja::UndefinedBehavior::SemiStrict);
+    })
+}
+
 /// Build the Rocket instance from a configuration figment (so tests can
 /// point `database_url` at a throwaway database).
 fn build(figment: Figment) -> Rocket<Build> {
@@ -66,7 +78,7 @@ fn build(figment: Figment) -> Rocket<Build> {
         .attach(telemetry::RequestLogger)
         .attach(headers::shield())
         .attach(headers::SecurityHeaders)
-        .attach(Template::fairing())
+        .attach(templates())
         .attach(db::stage())
         .mount(
             "/",

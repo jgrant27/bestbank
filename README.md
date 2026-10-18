@@ -12,7 +12,10 @@ that demonstrates:
 - SQLite persistence via [`sqlx`](https://github.com/launchbadge/sqlx) with
   embedded migrations, with money stored as integer cents and atomic,
   overdraft-safe withdrawals.
-- Handlebars templates populated from JSON endpoints.
+- [MiniJinja 2](https://docs.rs/minijinja) templates (`templates/*.html.j2`
+  with a shared `base` layout, autoescaped; printing a variable the handler
+  didn't pass is a render error), with the account page kept up to date from
+  JSON endpoints.
 - Authenticated, per-user WebSocket notifications (`rocket_ws`) on the same
   port as the app.
 

@@ -15,7 +15,10 @@ use std::time::{Duration, Instant};
 
 use rocket::http::{Header, Status};
 use rocket::request::{self, FromRequest, Request};
-use rocket_dyn_templates::Template;
+use rocket_dyn_templates::{Template, context};
+
+use crate::csrf::CsrfToken;
+use crate::db::AppConfig;
 
 /// Entries are pruned once the table grows past this many keys.
 const PRUNE_THRESHOLD: usize = 10_000;
@@ -129,15 +132,30 @@ pub struct TooManyRequests {
     retry_after: Header<'static>,
 }
 
+/// Re-renders the login page with an error (and a usable CSRF token, so the
+/// form works again once the window has passed).
 #[catch(429)]
-pub fn too_many_requests(request: &Request<'_>) -> TooManyRequests {
+pub async fn too_many_requests(request: &Request<'_>) -> TooManyRequests {
     let secs = request.local_cache(|| RetryAfter(60)).0;
-    let message = format!("Too many attempts. Please wait {secs} seconds and try again.");
-    let mut context = HashMap::new();
-    context.insert("flash", message);
-    context.insert("flash_kind", "error".to_owned());
+    let csrf_token = request
+        .guard::<CsrfToken>()
+        .await
+        .succeeded()
+        .map(|token| token.0);
+    let allow_registration = request
+        .rocket()
+        .state::<AppConfig>()
+        .is_some_and(|config| config.allow_registration);
     TooManyRequests {
-        page: Template::render("login", &context),
+        page: Template::render(
+            "login",
+            context! {
+                csrf_token,
+                allow_registration,
+                flash: format!("Too many attempts. Please wait {secs} seconds and try again."),
+                flash_kind: "error",
+            },
+        ),
         retry_after: Header::new("Retry-After", secs.to_string()),
     }
 }

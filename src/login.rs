@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use rocket::State;
 use rocket::form::Form;
 use rocket::http::{Cookie, CookieJar, SameSite, Status};
@@ -7,7 +5,7 @@ use rocket::outcome::IntoOutcome;
 use rocket::request::{self, FlashMessage, FromRequest, Request};
 use rocket::response::{Flash, Redirect};
 
-use rocket_dyn_templates::Template;
+use rocket_dyn_templates::{Template, context};
 
 use crate::db::{self, AppConfig, Db};
 use crate::telemetry::RequestId;
@@ -212,16 +210,15 @@ pub fn login_page(
     csrf: CsrfToken,
     flash: Option<FlashMessage<'_>>,
 ) -> Template {
-    let mut context: HashMap<&str, &str> = HashMap::new();
-    context.insert("csrf_token", &csrf.0);
-    if config.allow_registration {
-        context.insert("allow_registration", "true");
-    }
-    if let Some(ref flash) = flash {
-        context.insert("flash", flash.message());
-        context.insert("flash_kind", flash.kind());
-    }
-    Template::render("login", &context)
+    Template::render(
+        "login",
+        context! {
+            csrf_token: csrf.0,
+            allow_registration: config.allow_registration,
+            flash: flash.as_ref().map(FlashMessage::message),
+            flash_kind: flash.as_ref().map(FlashMessage::kind),
+        },
+    )
 }
 
 /// Log out: delete this browser's server-side session and its cookie.

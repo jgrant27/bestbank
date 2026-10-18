@@ -44,6 +44,17 @@ fn client_with_users(users: &[(&str, &str)]) -> (Client, TempDir) {
     (client, dir)
 }
 
+/// Undo the template engine's HTML escaping (minijinja also escapes `/`),
+/// so tests can look for the plain text a user sees.
+fn page_text(html: &str) -> String {
+    html.replace("&#x2f;", "/")
+        .replace("&#x27;", "'")
+        .replace("&quot;", "\"")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
 /// The client's current CSRF token (fetching one if it has none yet).
 fn csrf(client: &Client) -> String {
     if let Some(cookie) = client.cookies().get_private(CSRF_COOKIE) {
@@ -131,7 +142,7 @@ fn bad_login_is_rejected_with_flash() {
         assert_eq!(response.status(), Status::SeeOther);
         assert_eq!(location(&response).as_deref(), Some("/login"));
         assert!(response.cookies().get_private(SESSION_COOKIE).is_none());
-        let page = client.get("/login").dispatch().into_string().unwrap();
+        let page = page_text(&client.get("/login").dispatch().into_string().unwrap());
         assert!(page.contains("Invalid username/password."), "{user}/{pass}");
     }
     assert_eq!(
@@ -950,7 +961,7 @@ fn account_locks_after_repeated_failures_and_unlocks_later() {
     let client = Client::tracked(super::build(figment)).unwrap();
     for _ in 0..2 {
         login(&client, "admin", "wrong");
-        let page = client.get("/login").dispatch().into_string().unwrap();
+        let page = page_text(&client.get("/login").dispatch().into_string().unwrap());
         assert!(page.contains("Invalid username/password."));
     }
     login(&client, "admin", "wrong");
@@ -1736,4 +1747,104 @@ fn banking_script_never_injects_html_or_uses_alert() {
         assert!(!js.contains(banned), "static/banking.js uses {banned}");
     }
     assert!(js.contains("textContent"));
+}
+
+fn show(client: &Client, name: &str, context: impl rocket::serde::Serialize) -> Option<String> {
+    rocket_dyn_templates::Template::show(client.rocket(), name.to_owned(), context)
+}
+
+#[test]
+fn templates_are_minijinja_and_all_render() {
+    use rocket_dyn_templates::context;
+    let names: Vec<String> = std::fs::read_dir("templates")
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(names.iter().all(|n| n.ends_with(".html.j2")), "{names:?}");
+    for page in ["base", "_flash", "login", "register", "banking"] {
+        assert!(names.contains(&format!("{page}.html.j2")), "{page}");
+    }
+    let client = client();
+    let login = show(
+        &client,
+        "login",
+        context! { csrf_token: "tok", allow_registration: true },
+    )
+    .unwrap();
+    assert!(login.contains(r#"value="tok""#));
+    assert!(login.contains(r#"href="/register""#));
+    assert!(
+        !login.contains(r#"class="flash"#),
+        "no flash when none is set"
+    );
+    assert!(
+        login.contains("<title>🏦 Best Bank 🏦</title>"),
+        "base layout"
+    );
+    let register = show(&client, "register", context! { csrf_token: "tok" }).unwrap();
+    assert!(register.contains("<title>🏦 Best Bank 🏦 · Register</title>"));
+    let banking = show(
+        &client,
+        "banking",
+        context! { csrf_token: "tok", user_name: "zoe", balance: "1.23" },
+    )
+    .unwrap();
+    assert!(banking.contains(r#"<span id="name">zoe</span>"#));
+    assert!(banking.contains(r#"<span id="balance">1.23</span>"#));
+    assert!(banking.contains(r#"<meta name="csrf-token" content="tok" />"#));
+}
+
+#[test]
+fn templates_autoescape_everything() {
+    use rocket_dyn_templates::context;
+    let client = client();
+    let html = show(
+        &client,
+        "login",
+        context! {
+            csrf_token: r#""><script>alert(1)</script>"#,
+            allow_registration: false,
+            flash: "<b>hi</b> & bye",
+            flash_kind: r#"x" onmouseover="alert(1)"#,
+        },
+    )
+    .unwrap();
+    assert!(!html.contains("<script>alert"), "{html}");
+    assert!(!html.contains(r#"" onmouseover=""#), "{html}");
+    assert!(
+        html.contains("&lt;b&gt;hi&lt;&#x2f;b&gt; &amp; bye"),
+        "{html}"
+    );
+    assert!(!html.contains(r#"href="/register""#));
+}
+
+#[test]
+fn missing_template_variables_are_errors_not_blanks() {
+    use rocket_dyn_templates::context;
+    let client = client();
+    // Printing an undefined variable fails the render...
+    assert!(show(&client, "banking", context! { csrf_token: "tok" }).is_none());
+    assert!(show(&client, "register", context! {}).is_none());
+    // ...but `{% if flash %}` on a missing flash is fine.
+    assert!(show(&client, "register", context! { csrf_token: "tok" }).is_some());
+}
+
+#[test]
+fn rate_limited_login_page_has_a_working_csrf_token() {
+    let figment = figment("sqlite::memory:")
+        .merge(("login_rate_limit", 1))
+        .merge(("allow_registration", true));
+    let client = Client::tracked(super::build(figment)).unwrap();
+    login_from(&client, "10.7.7.7", "admin", "wrong");
+    let response = login_from(&client, "10.7.7.7", "admin", "wrong");
+    assert_eq!(response.status(), Status::TooManyRequests);
+    let page = page_text(&response.into_string().unwrap());
+    assert!(page.contains("Too many attempts. Please wait"));
+    assert!(page.contains(r#"href="/register""#));
+    let token = attribute_values(&page, "value")
+        .into_iter()
+        .find(|v| v.len() == 64)
+        .expect("csrf token in the form")
+        .to_owned();
+    assert_eq!(token, csrf(&client));
 }
