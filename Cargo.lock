@@ -161,7 +161,7 @@ dependencies = [
  "argon2",
  "chrono",
  "getrandom 0.4.3",
- "minijinja",
+ "minijinja 3.0.4",
  "rocket",
  "rocket_dyn_templates",
  "rocket_ws",
@@ -1296,6 +1296,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "minijinja"
+version = "3.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f384a3e3726ee69716c351e921b72138104afd1e5362561733c8a656fc8c6a9a"
+
+[[package]]
 name = "mio"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1749,7 +1755,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5bbab919c9e67df3f7ac6624a32ef897df4cd61c0969f4d66f3ced0534660d7a"
 dependencies = [
- "minijinja",
+ "minijinja 2.24.0",
  "normpath",
  "notify",
  "rocket",
